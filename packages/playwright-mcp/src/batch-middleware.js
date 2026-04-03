@@ -12,6 +12,8 @@ const BATCH_INPUT_SCHEMA = z.object({
     arguments: z.record(z.string(), z.unknown()).optional().describe('Arguments for the tool'),
   })).min(1).max(20).describe('Array of actions to execute sequentially'),
   stopOnError: z.boolean().optional().default(true).describe('Stop execution on first error (default: true)'),
+  defaultExpectations: z.record(z.string(), z.boolean()).optional()
+    .describe('Default expectations for all steps. Each step can override via arguments.expectations. Example: { "includeCode": false, "includeSnapshot": false }'),
 });
 
 const BATCH_EXECUTE_SCHEMA = {
@@ -30,6 +32,7 @@ const BATCH_EXECUTE_SCHEMA = {
 async function executeBatch(backend, params, progress) {
   const actions = params.actions || [];
   const stopOnError = params.stopOnError !== false;
+  const defaultExpectations = params.defaultExpectations || null;
   const results = [];
   let totalTimeMs = 0;
 
@@ -39,10 +42,17 @@ async function executeBatch(backend, params, progress) {
 
     progress({ message: `Step ${i + 1}/${actions.length}: ${action.tool}` });
 
+    // Merge defaultExpectations into step args (step-level overrides default)
+    let stepArgs = action.arguments || {};
+    if (defaultExpectations) {
+      const stepExp = stepArgs.expectations || {};
+      stepArgs = { ...stepArgs, expectations: { ...defaultExpectations, ...stepExp } };
+    }
+
     try {
       const result = await backend.callTool(
         action.tool,
-        action.arguments || {},
+        stepArgs,
         () => {}
       );
       const stepTimeMs = Date.now() - stepStart;
