@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+require('./src/setup-batch');
 const { program } = require('playwright-core/lib/utilsBundle');
 const { decorateMCPCommand } = require('playwright-core/lib/tools/mcp/program');
 
