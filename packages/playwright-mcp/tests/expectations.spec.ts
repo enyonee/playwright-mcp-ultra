@@ -85,6 +85,33 @@ test('no expectations = full response (backwards compatible)', async ({ client, 
   expect(text).toContain('### Page');
 });
 
+test('includePage: false removes Page section', async ({ client, server }) => {
+  const result = await client.callTool({
+    name: 'browser_navigate',
+    arguments: {
+      url: server.HELLO_WORLD,
+      expectations: { includePage: false },
+    },
+  });
+
+  const text = result.content[0].text;
+  expect(text).not.toContain('### Page');
+  expect(text).toContain('### Snapshot');
+});
+
+test('Result and Error sections are never filtered', async ({ client }) => {
+  // browser_network_requests returns a ### Result section
+  const result = await client.callTool({
+    name: 'browser_network_requests',
+    arguments: {
+      expectations: { includeSnapshot: false, includeCode: false, includePage: false },
+    },
+  });
+
+  const text = result.content[0].text;
+  expect(text).toContain('### Result');
+});
+
 test('batch defaultExpectations applies to all steps', async ({ client, server }) => {
   const result = await client.callTool({
     name: 'browser_batch_execute',

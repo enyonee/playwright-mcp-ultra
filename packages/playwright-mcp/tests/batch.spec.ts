@@ -69,6 +69,24 @@ test('batch execute continues on error when stopOnError is false', async ({ clie
   expect(text).toContain('Steps: 2/2 executed');
 });
 
+test('batch rejects nested batch execute', async ({ client, server }) => {
+  const result = await client.callTool({
+    name: 'browser_batch_execute',
+    arguments: {
+      actions: [
+        { tool: 'browser_navigate', arguments: { url: server.HELLO_WORLD } },
+        { tool: 'browser_batch_execute', arguments: { actions: [{ tool: 'browser_snapshot' }] } },
+      ],
+    },
+  });
+
+  const text = result.content[0].text;
+  expect(text).toContain('Steps: 2/2 executed');
+  expect(text).toContain('Successful: 1');
+  expect(text).toContain('Failed: 1');
+  expect(text).toContain('nested batch execute is not allowed');
+});
+
 test('batch execute single action', async ({ client, server }) => {
   const result = await client.callTool({
     name: 'browser_batch_execute',

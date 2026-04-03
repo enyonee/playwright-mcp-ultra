@@ -42,6 +42,13 @@ async function executeBatch(backend, params, progress) {
 
     progress({ message: `Step ${i + 1}/${actions.length}: ${action.tool}` });
 
+    if (action.tool === 'browser_batch_execute') {
+      results.push({ step: i + 1, tool: action.tool, success: false, timeMs: 0,
+        content: [{ type: 'text', text: 'Error: nested batch execute is not allowed' }], isError: true });
+      if (stopOnError) break;
+      continue;
+    }
+
     // Merge defaultExpectations into step args (step-level overrides default)
     let stepArgs = action.arguments || {};
     if (defaultExpectations) {
@@ -145,43 +152,6 @@ function formatBatchResult(results, totalSteps, totalTimeMs) {
 }
 
 /**
- * Wrap a backend to intercept batch_execute calls.
- * Uses the original callTool for individual actions.
- */
-function wrapBackend(backend) {
-  const originalCallTool = backend.callTool.bind(backend);
-
-  backend.callTool = async (name, args, progress) => {
-    if (name === 'browser_batch_execute') {
-      return executeBatch({ callTool: originalCallTool }, args, progress || (() => {}));
-    }
-    return originalCallTool(name, args, progress);
-  };
-
-  return backend;
-}
-
-/**
- * Wrap a backend factory to add batch execute support.
- * Returns a new factory with the same interface.
- */
-function wrapWithBatchExecute(factory) {
-  return {
-    name: factory.name,
-    nameInConfig: factory.nameInConfig,
-    version: factory.version,
-    toolSchemas: [...factory.toolSchemas, BATCH_EXECUTE_SCHEMA],
-
-    create: async (clientInfo) => {
-      const backend = await factory.create(clientInfo);
-      return wrapBackend(backend);
-    },
-
-    disposed: factory.disposed,
-  };
-}
-
-/**
  * Convert batch schema to MCP tool format (matching toMcpTool output)
  */
 function batchToolMcpSchema() {
@@ -199,4 +169,4 @@ function batchToolMcpSchema() {
   };
 }
 
-module.exports = { wrapWithBatchExecute, executeBatch, batchToolMcpSchema, BATCH_EXECUTE_SCHEMA };
+module.exports = { executeBatch, batchToolMcpSchema, BATCH_EXECUTE_SCHEMA };
