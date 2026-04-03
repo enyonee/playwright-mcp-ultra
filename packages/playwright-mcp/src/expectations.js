@@ -75,6 +75,10 @@ const EXPECTATIONS_JSON_SCHEMA = {
       type: 'boolean',
       description: 'Include open tabs list (default: true).',
     },
+    diff: {
+      type: 'boolean',
+      description: 'Enable snapshot diff mode (default: false). Returns "[Snapshot unchanged]" if identical to previous, or a compact line diff showing only changes. Saves ~80% tokens on repeated snapshots.',
+    },
   },
   additionalProperties: false,
 };
@@ -93,6 +97,8 @@ function extractExpectations(args) {
     if (raw[key] === false)
       expectations[key] = false;
   }
+  if (raw.diff === true)
+    expectations.diff = true;
   return { expectations, cleanArgs };
 }
 

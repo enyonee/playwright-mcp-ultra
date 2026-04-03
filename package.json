@@ -28,5 +28,8 @@
     "@modelcontextprotocol/sdk": "^1.25.2",
     "@playwright/test": "1.60.0-alpha-1774999321000",
     "@types/node": "^24.3.0"
+  },
+  "dependencies": {
+    "fast-diff": "^1.3.0"
   }
 }
