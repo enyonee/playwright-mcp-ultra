@@ -55,8 +55,9 @@ async function callToolWithStaleRefRetry(originalCallTool, backend, name, args, 
 
   // Stale ref detected - автоматический retry
   try {
-    // Берем свежий snapshot через navigate (вызовет refresh snapshot refs)
-    const snapshotResult = await originalCallTool.call(backend, 'browser_snapshot', {}, progress);
+    // Минимальный snapshot: depth=1 достаточно для refresh ref-ов в playwright-core.
+    // Полный snapshot не нужен - экономим ~50-100ms на большых страницах.
+    const snapshotResult = await originalCallTool.call(backend, 'browser_snapshot', { depth: 1 }, progress);
 
     // Retry оригинальный вызов (playwright-core переназначит ref-ы)
     const retryResult = await originalCallTool.call(backend, name, args, progress);

@@ -150,6 +150,7 @@ function injectViewportSchema(tools) {
 module.exports = {
   extractViewportOption,
   applyViewportFilter,
+  filterByViewportApprox,
   injectViewportSchema,
   VIEWPORT_SCHEMA,
 };

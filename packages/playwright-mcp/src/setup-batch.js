@@ -16,15 +16,61 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
 
   const { executeBatch, batchToolMcpSchema } = require('./batch-middleware');
   const { applyExpectations, injectExpectationsSchema } = require('./expectations');
-  const { applySnapshotDiff } = require('./diff-tracker');
+  const { diffSnapshotContent } = require('./diff-tracker');
   const { applyNetworkFilter, applyConsoleFilter, injectFilterSchemas } = require('./result-filters');
   const { applyImageOptimization, injectImageOptionsSchema } = require('./image-optimizer');
   const { executeAssert, assertToolMcpSchema } = require('./assert');
   const { recordAction, getSessionContext, sessionContextMcpSchema } = require('./session-context');
-  const { applySnapshotTruncation, injectTruncationSchema } = require('./snapshot-truncator');
-  const { applyViewportFilter, injectViewportSchema } = require('./viewport-filter');
+  const { truncateSnapshotContent, injectTruncationSchema } = require('./snapshot-truncator');
+  const { filterByViewportApprox, injectViewportSchema } = require('./viewport-filter');
   const { callToolWithStaleRefRetry } = require('./stale-ref-resolver');
   const { parseResponseBudget, enforceResponseBudget } = require('./response-budget');
+
+  // Regex для snapshot extract/replace - вызывается ОДИН раз за pipeline (#4 optimization)
+  const SNAPSHOT_RE = /(### Snapshot\n)([\s\S]*?)(?=\n### |\s*$)/;
+
+  /**
+   * Consolidated snapshot pipeline: extract ONCE -> transform -> replace ONCE.
+   * Replaces 3 separate regex extract+replace cycles (~6 regex ops) with 2 (~1 extract + 1 replace).
+   */
+  function applySnapshotPipeline(result, backend, truncationOpts, viewportOnly, diffEnabled) {
+    if (!result || !result.content) return result;
+
+    let changed = false;
+    const content = result.content.map(part => {
+      if (part.type !== 'text' || !part.text) return part;
+      if (part.text.indexOf('### Snapshot') === -1) return part;
+
+      const match = part.text.match(SNAPSHOT_RE);
+      if (!match) return part;
+
+      let snapshotContent = match[2];
+
+      // Transform 1: truncation
+      if (truncationOpts)
+        snapshotContent = truncateSnapshotContent(snapshotContent, truncationOpts);
+
+      // Transform 2: viewport filter
+      if (viewportOnly)
+        snapshotContent = filterByViewportApprox(snapshotContent);
+
+      // Transform 3: diff
+      if (diffEnabled) {
+        const diffResult = diffSnapshotContent(backend, snapshotContent);
+        if (diffResult !== null)
+          snapshotContent = diffResult;
+      }
+
+      // Единственный replace
+      if (snapshotContent !== match[2]) {
+        changed = true;
+        return { ...part, text: part.text.replace(SNAPSHOT_RE, `$1${snapshotContent}`) };
+      }
+      return part;
+    });
+
+    return changed ? { ...result, content } : result;
+  }
 
   const globalBudget = parseResponseBudget(process.argv);
 
@@ -98,8 +144,20 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
     // Unified extraction (one pass)
     const opts = extractAllOptions(args);
 
+    // Native JPEG pass-through: если нужен только quality без resize,
+    // передаем type/quality напрямую в playwright-core (экономим decode/encode цикл ~200-400ms)
+    let callArgs = opts.cleanArgs;
+    let skipImageOptimization = false;
+    if (opts.imageOptions && name === 'browser_take_screenshot') {
+      const { quality, maxWidth } = opts.imageOptions;
+      if (quality && !maxWidth) {
+        callArgs = { ...callArgs, type: 'jpeg', quality };
+        skipImageOptimization = true;
+      }
+    }
+
     // Call original (with stale ref retry for interactive tools)
-    const result = await callToolWithStaleRefRetry(originalCallTool, this, name, opts.cleanArgs, progress);
+    const result = await callToolWithStaleRefRetry(originalCallTool, this, name, callArgs, progress);
 
     // Session recording (lazy: expensive page state parsing only for relevant tools)
     recordAction(this, name, opts.cleanArgs, result, PAGE_STATE_TOOLS.has(name));
@@ -107,21 +165,19 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
     // Post-processing pipeline with early exits (no allocation if option is null/false)
     let processed = result;
 
-    // Image optimization (screenshot only)
-    if (opts.imageOptions && name === 'browser_take_screenshot')
+    // Image optimization (screenshot only, skip if native JPEG was used)
+    if (opts.imageOptions && name === 'browser_take_screenshot' && !skipImageOptimization)
       processed = applyImageOptimization(processed, opts.imageOptions);
 
     // Snapshot-specific optimizations (skip for non-snapshot tools)
+    // Regex consolidation: extract snapshot ONCE, apply all transforms, replace ONCE
     if (name === 'browser_snapshot' || name === 'browser_navigate' ||
         name === 'browser_click' || name === 'browser_type') {
-      if (opts.truncationOpts)
-        processed = applySnapshotTruncation(processed, opts.truncationOpts);
-      if (opts.viewportOnly)
-        processed = applyViewportFilter(processed, true);
-
       const diffEnabled = opts.expectations && opts.expectations.diff === true;
-      if (diffEnabled)
-        processed = applySnapshotDiff(this, processed, true);
+      const needsProcessing = opts.truncationOpts || opts.viewportOnly || diffEnabled;
+
+      if (needsProcessing)
+        processed = applySnapshotPipeline(processed, this, opts.truncationOpts, opts.viewportOnly, diffEnabled);
     }
 
     // Result filters (tool-specific, guarded)

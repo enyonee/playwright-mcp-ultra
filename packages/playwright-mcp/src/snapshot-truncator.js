@@ -278,6 +278,23 @@ function injectTruncationSchema(tools) {
 module.exports = {
   extractTruncationOptions,
   applySnapshotTruncation,
+  truncateSnapshotContent,
   injectTruncationSchema,
   TRUNCATION_SCHEMA,
 };
+
+/**
+ * Direct transform on snapshot content string (no regex extract/replace).
+ * Used by consolidated pipeline in setup-batch.js.
+ */
+function truncateSnapshotContent(snapshotContent, opts) {
+  const maxTokens = opts.maxTokens;
+  const maxDepth = opts.maxDepth;
+  if (!maxTokens && !maxDepth) return snapshotContent;
+
+  return truncateSnapshot(snapshotContent, {
+    maxChars: maxTokens ? maxTokens * CHARS_PER_TOKEN : Infinity,
+    maxDepth: maxDepth || Infinity,
+    prioritizeInteractable: opts.prioritizeInteractable !== false,
+  });
+}

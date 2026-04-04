@@ -52,7 +52,10 @@ const ASSERT_TOOL_SCHEMA = {
 };
 
 /**
- * Execute assertions against the current page via evaluate.
+ * Execute ALL assertions in a single browser_evaluate call.
+ * Previous: N assertions = N round-trips (~300ms each).
+ * Now: N assertions = 1 round-trip (~300ms total).
+ *
  * @param {object} backend - BrowserBackend instance
  * @param {object} params - Tool parameters
  * @returns {object} MCP tool result
@@ -60,182 +63,134 @@ const ASSERT_TOOL_SCHEMA = {
 async function executeAssert(backend, params) {
   const assertions = params.assertions || [];
   const stopOnFailure = params.stopOnFailure === true;
-  const timeout = params.timeout || 5000;
-  const results = [];
+
+  // Все ассерции выполняются в одном evaluate - один round-trip
+  const serialized = JSON.stringify(assertions);
+  const evalResult = await backend.callTool('browser_evaluate', {
+    function: `() => {
+      const assertions = ${serialized};
+      const stopOnFailure = ${stopOnFailure};
+      const results = [];
+
+      for (const a of assertions) {
+        let r;
+        try {
+          r = runOne(a);
+        } catch(e) {
+          r = { type: a.type, passed: false, message: 'Error: ' + e.message };
+        }
+        results.push(r);
+        if (stopOnFailure && !r.passed) break;
+      }
+      return JSON.stringify(results);
+
+      function runOne(a) {
+        const { type, text, selector, value, attribute, min, max, count } = a;
+
+        // URL/title
+        if (type === 'url_contains' || type === 'url_equals') {
+          const actual = window.location.href;
+          const pass = type === 'url_contains' ? actual.includes(value || '') : actual === (value || '');
+          return { type, passed: pass, expected: value, actual,
+            message: pass ? 'Contains "' + value + '"' : '"' + actual + '" does not contain "' + value + '"' };
+        }
+        if (type === 'title_contains' || type === 'title_equals') {
+          const actual = document.title;
+          const pass = type === 'title_contains' ? actual.includes(value || '') : actual === (value || '');
+          return { type, passed: pass, expected: value, actual,
+            message: pass ? 'Contains "' + value + '"' : '"' + actual + '" does not contain "' + value + '"' };
+        }
+
+        // Text visibility
+        if (type === 'text_visible' || type === 'text_not_visible') {
+          const negate = type === 'text_not_visible';
+          const searchText = text || '';
+          let found = false;
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            if (walker.currentNode.textContent.includes(searchText)) {
+              const el = walker.currentNode.parentElement;
+              if (!el) continue;
+              const style = getComputedStyle(el);
+              if (style.display !== 'none' && style.visibility !== 'hidden') { found = true; break; }
+            }
+          }
+          const pass = negate ? !found : found;
+          return { type, passed: pass, text: searchText,
+            message: pass ? (negate ? 'Text not found (expected)' : 'Text found')
+              : (negate ? 'Text "' + searchText + '" unexpectedly visible' : 'Text "' + searchText + '" not found') };
+        }
+
+        // Element-based assertions
+        if (!selector) return { type, passed: false, message: 'Missing selector' };
+        const els = document.querySelectorAll(selector);
+        const first = els[0];
+        const data = {
+          count: els.length,
+          exists: els.length > 0,
+          visible: first ? getComputedStyle(first).display !== 'none' && getComputedStyle(first).visibility !== 'hidden' : false,
+          enabled: first ? !first.disabled : false,
+          checked: first ? !!first.checked : false,
+          text: first ? (first.textContent || '').trim().slice(0, 500) : '',
+          attr: first && attribute ? first.getAttribute(attribute) : null,
+        };
+
+        switch(type) {
+          case 'element_exists':
+            return { type, passed: data.exists, selector, count: data.count, message: data.exists ? 'Found (' + data.count + ')' : 'Not found' };
+          case 'element_not_exists':
+            return { type, passed: !data.exists, selector, message: data.exists ? 'Unexpectedly found (' + data.count + ')' : 'Not found (expected)' };
+          case 'element_count': {
+            let pass = true;
+            if (count !== undefined) pass = data.count === count;
+            else {
+              if (min !== undefined && data.count < min) pass = false;
+              if (max !== undefined && data.count > max) pass = false;
+            }
+            return { type, passed: pass, selector, actual: data.count,
+              expected: count !== undefined ? count : (min || 0) + '-' + (max || 'inf'),
+              message: pass ? 'Count: ' + data.count : 'Count ' + data.count + ' outside expected range' };
+          }
+          case 'element_text': {
+            const pass = data.text.includes(value || '');
+            return { type, passed: pass, selector, actual: data.text.slice(0, 100),
+              message: pass ? 'Text matches' : 'Text does not contain "' + value + '"' };
+          }
+          case 'element_attribute': {
+            const pass = data.attr === value;
+            return { type, passed: pass, selector, attribute, actual: data.attr,
+              message: pass ? 'Attribute matches' : 'Attribute "' + attribute + '" is "' + data.attr + '", expected "' + value + '"' };
+          }
+          case 'element_visible':
+            return { type, passed: data.visible, selector, message: data.visible ? 'Visible' : 'Not visible' };
+          case 'element_enabled':
+            return { type, passed: data.enabled, selector, message: data.enabled ? 'Enabled' : 'Disabled' };
+          case 'element_checked':
+            return { type, passed: data.checked, selector, message: data.checked ? 'Checked' : 'Not checked' };
+          default:
+            return { type, passed: false, message: 'Unknown type: ' + type };
+        }
+      }
+    }`,
+  }, () => {});
+
+  // Парсим результат (evaluate возвращает double-wrapped JSON)
+  const results = extractEvaluateResultParsed(evalResult);
+  if (!Array.isArray(results)) {
+    return {
+      content: [{ type: 'text', text: '## Assertions: ERROR\nFailed to execute assertions in single evaluate.' }],
+      isError: true,
+    };
+  }
+
   let passed = 0;
   let failed = 0;
-
-  for (const assertion of assertions) {
-    try {
-      const result = await runSingleAssertion(backend, assertion, timeout);
-      results.push(result);
-      if (result.passed) passed++;
-      else {
-        failed++;
-        if (stopOnFailure) break;
-      }
-    } catch (error) {
-      const result = { type: assertion.type, passed: false, message: `Error: ${error.message}` };
-      results.push(result);
-      failed++;
-      if (stopOnFailure) break;
-    }
+  for (const r of results) {
+    if (r.passed) passed++;
+    else failed++;
   }
 
   return formatAssertResult(results, passed, failed);
-}
-
-async function runSingleAssertion(backend, assertion, timeout) {
-  const { type } = assertion;
-
-  // URL/title - через evaluate
-  if (type === 'url_contains' || type === 'url_equals' ||
-      type === 'title_contains' || type === 'title_equals') {
-    return runPagePropertyAssertion(backend, assertion, timeout);
-  }
-
-  // Text visibility
-  if (type === 'text_visible' || type === 'text_not_visible') {
-    return runTextAssertion(backend, assertion, timeout);
-  }
-
-  // Element-based
-  return runElementAssertion(backend, assertion, timeout);
-}
-
-async function runPagePropertyAssertion(backend, assertion, timeout) {
-  const { type, value } = assertion;
-
-  // Используем browser_evaluate чтобы получить URL/title
-  const fnBody = type.startsWith('url_')
-    ? 'return window.location.href;'
-    : 'return document.title;';
-
-  const result = await backend.callTool('browser_evaluate', {
-    function: `() => { ${fnBody} }`,
-  }, () => {});
-
-  const actual = extractEvaluateResult(result);
-
-  if (type === 'url_contains' || type === 'title_contains') {
-    const pass = actual.includes(value || '');
-    return { type, passed: pass, expected: value, actual,
-      message: pass ? `Contains "${value}"` : `"${actual}" does not contain "${value}"` };
-  }
-
-  const pass = actual === (value || '');
-  return { type, passed: pass, expected: value, actual,
-    message: pass ? 'Match' : `Expected "${value}", got "${actual}"` };
-}
-
-async function runTextAssertion(backend, assertion, timeout) {
-  const { type, text } = assertion;
-  const negate = type === 'text_not_visible';
-  const escaped = JSON.stringify(text || '');
-
-  const result = await backend.callTool('browser_evaluate', {
-    function: `() => {
-      const text = ${escaped};
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      while (walker.nextNode()) {
-        if (walker.currentNode.textContent.includes(text)) {
-          const el = walker.currentNode.parentElement;
-          if (!el) continue;
-          const style = getComputedStyle(el);
-          if (style.display !== 'none' && style.visibility !== 'hidden') return true;
-        }
-      }
-      return false;
-    }`,
-  }, () => {});
-
-  const found = extractEvaluateResult(result) === 'true';
-  const pass = negate ? !found : found;
-
-  return { type, passed: pass, text,
-    message: pass ? (negate ? 'Text not found (expected)' : 'Text found')
-      : (negate ? `Text "${text}" unexpectedly visible` : `Text "${text}" not found`) };
-}
-
-async function runElementAssertion(backend, assertion, timeout) {
-  const { type, selector, value, attribute, min, max, count } = assertion;
-  if (!selector)
-    return { type, passed: false, message: 'Missing selector' };
-
-  const escapedSelector = JSON.stringify(selector);
-  const escapedAttr = JSON.stringify(attribute || '');
-
-  const result = await backend.callTool('browser_evaluate', {
-    function: `() => {
-      const sel = ${escapedSelector};
-      const attrName = ${escapedAttr};
-      const els = document.querySelectorAll(sel);
-      const first = els[0];
-      return JSON.stringify({
-        count: els.length,
-        exists: els.length > 0,
-        visible: first ? getComputedStyle(first).display !== 'none' && getComputedStyle(first).visibility !== 'hidden' : false,
-        enabled: first ? !first.disabled : false,
-        checked: first ? !!first.checked : false,
-        text: first ? (first.textContent || '').trim().slice(0, 500) : '',
-        attr: first && attrName ? first.getAttribute(attrName) : null,
-      });
-    }`,
-  }, () => {});
-
-  const data = extractEvaluateResultParsed(result);
-  if (!data || typeof data !== 'object') {
-    return { type, passed: false, selector, message: 'Failed to evaluate selector' };
-  }
-
-  switch (type) {
-    case 'element_exists':
-      return { type, passed: data.exists, selector, count: data.count,
-        message: data.exists ? `Found (${data.count})` : 'Not found' };
-
-    case 'element_not_exists':
-      return { type, passed: !data.exists, selector,
-        message: data.exists ? `Unexpectedly found (${data.count})` : 'Not found (expected)' };
-
-    case 'element_count': {
-      let pass = true;
-      if (count !== undefined) pass = data.count === count;
-      else {
-        if (min !== undefined && data.count < min) pass = false;
-        if (max !== undefined && data.count > max) pass = false;
-      }
-      return { type, passed: pass, selector, actual: data.count,
-        expected: count !== undefined ? count : `${min || 0}-${max || 'inf'}`,
-        message: pass ? `Count: ${data.count}` : `Count ${data.count} outside expected range` };
-    }
-
-    case 'element_text': {
-      const pass = data.text.includes(value || '');
-      return { type, passed: pass, selector, actual: data.text.slice(0, 100),
-        message: pass ? 'Text matches' : `Text "${data.text.slice(0, 50)}" doesn't contain "${value}"` };
-    }
-
-    case 'element_attribute': {
-      const pass = data.attr === value;
-      return { type, passed: pass, selector, attribute, actual: data.attr,
-        message: pass ? 'Attribute matches' : `Attribute "${attribute}" is "${data.attr}", expected "${value}"` };
-    }
-
-    case 'element_visible':
-      return { type, passed: data.visible, selector,
-        message: data.visible ? 'Visible' : 'Not visible' };
-
-    case 'element_enabled':
-      return { type, passed: data.enabled, selector,
-        message: data.enabled ? 'Enabled' : 'Disabled' };
-
-    case 'element_checked':
-      return { type, passed: data.checked, selector,
-        message: data.checked ? 'Checked' : 'Not checked' };
-
-    default:
-      return { type, passed: false, message: `Unknown assertion type: ${type}` };
-  }
 }
 
 function extractEvaluateResult(result) {

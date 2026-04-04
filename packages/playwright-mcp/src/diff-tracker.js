@@ -14,7 +14,7 @@ const stateMap = new WeakMap();
 
 function getState(backend) {
   if (!stateMap.has(backend))
-    stateMap.set(backend, { hash: null, lines: null });
+    stateMap.set(backend, { hash: null, lastLength: -1, lines: null });
   return stateMap.get(backend);
 }
 
@@ -143,4 +143,45 @@ function formatLineDiff(oldLines, newLines) {
   return `${header}\n${output.join('\n')}`;
 }
 
-module.exports = { applySnapshotDiff };
+/**
+ * Content-level diff: takes raw snapshot string, returns transformed string.
+ * Used by consolidated pipeline in setup-batch.js (no regex extract/replace).
+ * Returns null if no change needed (first snapshot or diff disabled).
+ */
+function diffSnapshotContent(backend, snapshotContent) {
+  const state = getState(backend);
+
+  // #7: fast pre-check by length before SHA-256
+  if (state.hash !== null && state.lastLength === snapshotContent.length) {
+    const hash = crypto.createHash('sha256').update(snapshotContent).digest('hex');
+    if (state.hash === hash)
+      return '[Snapshot unchanged]';
+
+    // Длина совпала, но содержимое разное
+    const newLines = snapshotContent.split('\n');
+    const diffText = formatLineDiff(state.lines, newLines);
+    state.hash = hash;
+    state.lastLength = snapshotContent.length;
+    state.lines = newLines;
+    return diffText;
+  }
+
+  if (state.hash !== null) {
+    // Длина изменилась - точно разные, хеш не нужен для проверки, но нужен для кеша
+    const hash = crypto.createHash('sha256').update(snapshotContent).digest('hex');
+    const newLines = snapshotContent.split('\n');
+    const diffText = formatLineDiff(state.lines, newLines);
+    state.hash = hash;
+    state.lastLength = snapshotContent.length;
+    state.lines = newLines;
+    return diffText;
+  }
+
+  // Первый snapshot - запоминаем, не трансформируем
+  state.hash = crypto.createHash('sha256').update(snapshotContent).digest('hex');
+  state.lastLength = snapshotContent.length;
+  state.lines = snapshotContent.split('\n');
+  return null;
+}
+
+module.exports = { applySnapshotDiff, diffSnapshotContent };

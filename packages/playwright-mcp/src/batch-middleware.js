@@ -26,8 +26,16 @@ const BATCH_EXECUTE_SCHEMA = {
   inputSchema: BATCH_INPUT_SCHEMA,
 };
 
+// Read-only tools safe for parallel execution within batch
+const READ_ONLY_TOOLS = new Set([
+  'browser_snapshot', 'browser_take_screenshot',
+  'browser_console_messages', 'browser_network_requests',
+  'browser_session_context', 'browser_assert',
+]);
+
 /**
- * Execute batch of actions against the backend
+ * Execute batch of actions against the backend.
+ * Consecutive read-only tools run in parallel via Promise.all.
  */
 async function executeBatch(backend, params, progress) {
   const actions = params.actions || [];
@@ -35,68 +43,119 @@ async function executeBatch(backend, params, progress) {
   const defaultExpectations = params.defaultExpectations || null;
   const results = [];
   let totalTimeMs = 0;
+  let stopped = false;
 
-  for (let i = 0; i < actions.length; i++) {
-    const action = actions[i];
-    const stepStart = Date.now();
+  // Группируем в сегменты: parallel (read-only) и sequential (interactive)
+  const segments = segmentActions(actions);
 
-    progress({ message: `Step ${i + 1}/${actions.length}: ${action.tool}` });
+  for (const segment of segments) {
+    if (stopped) break;
 
-    if (action.tool === 'browser_batch_execute') {
-      results.push({ step: i + 1, tool: action.tool, success: false, timeMs: 0,
-        content: [{ type: 'text', text: 'Error: nested batch execute is not allowed' }], isError: true });
-      if (stopOnError) break;
-      continue;
-    }
+    if (segment.parallel && segment.items.length > 1) {
+      // Параллельное выполнение read-only инструментов
+      const batchStart = Date.now();
+      progress({ message: `Steps ${segment.items.map(a => a.idx + 1).join(',')}: parallel (${segment.items.length} read-only)` });
 
-    // Merge defaultExpectations into step args (step-level overrides default)
-    let stepArgs = action.arguments || {};
-    if (defaultExpectations) {
-      const stepExp = stepArgs.expectations || {};
-      stepArgs = { ...stepArgs, expectations: { ...defaultExpectations, ...stepExp } };
-    }
-
-    try {
-      const result = await backend.callTool(
-        action.tool,
-        stepArgs,
-        () => {}
-      );
-      const stepTimeMs = Date.now() - stepStart;
-      totalTimeMs += stepTimeMs;
-
-      results.push({
-        step: i + 1,
-        tool: action.tool,
-        success: !result.isError,
-        timeMs: stepTimeMs,
-        content: result.content,
-        isError: result.isError,
+      const promises = segment.items.map(async (item) => {
+        const stepStart = Date.now();
+        try {
+          let stepArgs = item.arguments || {};
+          if (defaultExpectations) {
+            const stepExp = stepArgs.expectations || {};
+            stepArgs = { ...stepArgs, expectations: { ...defaultExpectations, ...stepExp } };
+          }
+          const result = await backend.callTool(item.tool, stepArgs, () => {});
+          return {
+            step: item.idx + 1, tool: item.tool,
+            success: !result.isError, timeMs: Date.now() - stepStart,
+            content: result.content, isError: result.isError,
+          };
+        } catch (error) {
+          return {
+            step: item.idx + 1, tool: item.tool,
+            success: false, timeMs: Date.now() - stepStart,
+            content: [{ type: 'text', text: `Error: ${error.message}` }], isError: true,
+          };
+        }
       });
 
-      if (result.isError && stopOnError) {
-        break;
+      const stepResults = await Promise.all(promises);
+      const batchTimeMs = Date.now() - batchStart;
+      totalTimeMs += batchTimeMs;
+
+      // Сохраняем в порядке оригинальных индексов
+      stepResults.sort((a, b) => a.step - b.step);
+      for (const r of stepResults) {
+        results.push(r);
+        if (r.isError && stopOnError) { stopped = true; break; }
       }
-    } catch (error) {
-      const stepTimeMs = Date.now() - stepStart;
-      totalTimeMs += stepTimeMs;
+    } else {
+      // Последовательное выполнение
+      for (const item of segment.items) {
+        if (stopped) break;
+        const stepStart = Date.now();
 
-      results.push({
-        step: i + 1,
-        tool: action.tool,
-        success: false,
-        timeMs: stepTimeMs,
-        content: [{ type: 'text', text: `Error: ${error.message}` }],
-        isError: true,
-      });
+        progress({ message: `Step ${item.idx + 1}/${actions.length}: ${item.tool}` });
 
-      if (stopOnError) {
-        break;
+        if (item.tool === 'browser_batch_execute') {
+          results.push({ step: item.idx + 1, tool: item.tool, success: false, timeMs: 0,
+            content: [{ type: 'text', text: 'Error: nested batch execute is not allowed' }], isError: true });
+          if (stopOnError) { stopped = true; }
+          continue;
+        }
+
+        let stepArgs = item.arguments || {};
+        if (defaultExpectations) {
+          const stepExp = stepArgs.expectations || {};
+          stepArgs = { ...stepArgs, expectations: { ...defaultExpectations, ...stepExp } };
+        }
+
+        try {
+          const result = await backend.callTool(item.tool, stepArgs, () => {});
+          const stepTimeMs = Date.now() - stepStart;
+          totalTimeMs += stepTimeMs;
+          results.push({
+            step: item.idx + 1, tool: item.tool,
+            success: !result.isError, timeMs: stepTimeMs,
+            content: result.content, isError: result.isError,
+          });
+          if (result.isError && stopOnError) { stopped = true; }
+        } catch (error) {
+          const stepTimeMs = Date.now() - stepStart;
+          totalTimeMs += stepTimeMs;
+          results.push({
+            step: item.idx + 1, tool: item.tool,
+            success: false, timeMs: stepTimeMs,
+            content: [{ type: 'text', text: `Error: ${error.message}` }], isError: true,
+          });
+          if (stopOnError) { stopped = true; }
+        }
       }
     }
   }
 
   return formatBatchResult(results, actions.length, totalTimeMs);
+}
+
+/**
+ * Разбивает actions на сегменты: consecutive read-only -> parallel, остальное -> sequential.
+ */
+function segmentActions(actions) {
+  const segments = [];
+  let current = null;
+
+  for (let i = 0; i < actions.length; i++) {
+    const action = actions[i];
+    const isReadOnly = READ_ONLY_TOOLS.has(action.tool);
+
+    if (!current || current.parallel !== isReadOnly) {
+      current = { parallel: isReadOnly, items: [] };
+      segments.push(current);
+    }
+    current.items.push({ ...action, idx: i });
+  }
+
+  return segments;
 }
 
 /**
