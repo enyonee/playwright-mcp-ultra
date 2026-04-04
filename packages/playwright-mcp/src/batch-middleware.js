@@ -194,12 +194,20 @@ function formatBatchResult(results, totalSteps, totalTimeMs) {
     lines.push('');
   }
 
+  // Final State: только последний успешный step, с обрезкой до 50 строк.
+  // Полный snapshot мог быть 500+ строк - основная причина медленной обработки ответа.
   const lastSuccessful = [...results].reverse().find(r => r.success);
   if (lastSuccessful && lastSuccessful.content) {
     lines.push('## Final State (last successful step)');
     for (const part of lastSuccessful.content) {
-      if (part.type === 'text') {
-        lines.push(part.text);
+      if (part.type === 'text' && part.text) {
+        const partLines = part.text.split('\n');
+        if (partLines.length <= 50) {
+          lines.push(part.text);
+        } else {
+          lines.push(...partLines.slice(0, 50));
+          lines.push(`... (${partLines.length - 50} more lines omitted)`);
+        }
       }
     }
   }

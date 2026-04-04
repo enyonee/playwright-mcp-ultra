@@ -17,7 +17,7 @@ const STALE_REF_PATTERNS = [
   /no longer attached/i,
   /element.*not found/i,
   /Cannot find element/i,
-  /ref \d+ does not/i,
+  /ref \w+ not found/i,
   /element ref.*not/i,
   /stale element/i,
 ];
