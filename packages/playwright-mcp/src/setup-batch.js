@@ -72,7 +72,10 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
     return changed ? { ...result, content } : result;
   }
 
-  const globalBudget = parseResponseBudget(process.argv);
+  // Дефолтный budget 4000 tokens (~16k chars) если не задан явно.
+  // Wikipedia snapshot = 14k tokens без ограничения -> agent тормозит.
+  const DEFAULT_BUDGET = 4000;
+  const globalBudget = parseResponseBudget(process.argv) || DEFAULT_BUDGET;
 
   // Keys we strip from args before passing to playwright-core
   const CUSTOM_KEYS = new Set(['expectations', 'filter', 'imageOptions', 'snapshotOptions', 'viewportOnly']);
@@ -159,6 +162,14 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
     // Call original (with stale ref retry for interactive tools)
     const result = await callToolWithStaleRefRetry(originalCallTool, this, name, callArgs, progress);
 
+    // Диагностика: raw размер ДО наших фильтров
+    if (process.env.MCP_DEBUG_SIZE) {
+      let rawSz = 0;
+      for (const p of (result.content || []))
+        rawSz += p.type === 'text' ? (p.text || '').length : (p.data || '').length;
+      process.stderr.write(`[mcp-raw] ${name}: ${rawSz} chars (~${Math.round(rawSz/4)} tokens)\n`);
+    }
+
     // Session recording (lazy: expensive page state parsing only for relevant tools)
     recordAction(this, name, opts.cleanArgs, result, PAGE_STATE_TOOLS.has(name));
 
@@ -195,6 +206,14 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
     // Global budget (only if configured)
     if (globalBudget)
       processed = enforceResponseBudget(processed, name, globalBudget);
+
+    // Диагностика размера ответа (stderr, не попадает в MCP протокол)
+    if (process.env.MCP_DEBUG_SIZE) {
+      let sz = 0;
+      for (const p of (processed.content || []))
+        sz += p.type === 'text' ? (p.text || '').length : (p.data || '').length;
+      process.stderr.write(`[mcp-size] ${name}: ${sz} chars (~${Math.round(sz/4)} tokens)\n`);
+    }
 
     return processed;
   };
