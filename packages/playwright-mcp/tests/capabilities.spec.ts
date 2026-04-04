@@ -46,8 +46,10 @@ test('test snapshot tool list', async ({ client }) => {
   ])
     expect(toolNames, `missing upstream tool: ${name}`).toContain(name);
 
-  // Наш кастомный тул
+  // Наши кастомные тулы
   expect(toolNames).toContain('browser_batch_execute');
+  expect(toolNames).toContain('browser_assert');
+  expect(toolNames).toContain('browser_session_context');
 });
 
 test('test capabilities (pdf)', async ({ startClient }) => {
