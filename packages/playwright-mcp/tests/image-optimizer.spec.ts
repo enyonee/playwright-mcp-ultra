@@ -66,7 +66,7 @@ test('imageOptions maxWidth resizes screenshot', async ({ client, server }) => {
   expect(decoded.width).toBeLessThanOrEqual(200);
 });
 
-test('screenshot without imageOptions works normally', async ({ client, server }) => {
+test('screenshot without imageOptions gets default JPEG optimization', async ({ client, server }) => {
   await client.callTool({ name: 'browser_navigate', arguments: { url: server.HELLO_WORLD } });
 
   const result = await client.callTool({
@@ -76,5 +76,12 @@ test('screenshot without imageOptions works normally', async ({ client, server }
 
   const image = result.content.find((p: any) => p.type === 'image');
   expect(image).toBeTruthy();
-  expect(image.mimeType).toBe('image/png');
+  // Default: JPEG q80 maxWidth 800 (saves ~80% vs raw PNG)
+  expect(image.mimeType).toBe('image/jpeg');
+
+  // Verify dimensions are capped at 800px
+  const jpegjs = require('playwright-core/lib/utilsBundle').jpegjs;
+  const buf = Buffer.from(image.data, 'base64');
+  const decoded = jpegjs.decode(buf, { maxMemoryUsageInMB: 512 });
+  expect(decoded.width).toBeLessThanOrEqual(800);
 });

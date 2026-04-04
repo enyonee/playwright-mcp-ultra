@@ -21,7 +21,8 @@ test('browser_navigate', async ({ client, server }) => {
     name: 'browser_navigate',
     arguments: { url: server.HELLO_WORLD },
   })).toHaveResponse({
-    code: `await page.goto('${server.HELLO_WORLD}');`,
-    snapshot: expect.stringContaining(`generic [active] [ref=e1]: Hello, world!`),
+    // code excluded by default (includeCode: false)
+    // refs stripped from non-interactive elements (generic)
+    snapshot: expect.stringContaining(`generic [active]: Hello, world!`),
   });
 });

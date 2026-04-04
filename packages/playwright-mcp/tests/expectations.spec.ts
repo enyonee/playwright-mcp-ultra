@@ -29,17 +29,17 @@ test('expectations schema appears in tool list', async ({ client }) => {
   expect(batch!.inputSchema.properties.expectations).toBeFalsy();
 });
 
-test('includeCode: false removes Ran Playwright code section', async ({ client, server }) => {
+test('includeCode: true explicitly includes Ran Playwright code section', async ({ client, server }) => {
   const result = await client.callTool({
     name: 'browser_navigate',
     arguments: {
       url: server.HELLO_WORLD,
-      expectations: { includeCode: false },
+      expectations: { includeCode: true },
     },
   });
 
   const text = result.content[0].text;
-  expect(text).not.toContain('### Ran Playwright code');
+  expect(text).toContain('### Ran Playwright code');
   expect(text).toContain('### Page');
   expect(text).toContain('### Snapshot');
 });
@@ -55,7 +55,8 @@ test('includeSnapshot: false removes Snapshot section', async ({ client, server 
 
   const text = result.content[0].text;
   expect(text).not.toContain('### Snapshot');
-  expect(text).toContain('### Ran Playwright code');
+  // Code is excluded by default (includeCode defaults to false)
+  expect(text).not.toContain('### Ran Playwright code');
 });
 
 test('multiple expectations combined', async ({ client, server }) => {
@@ -73,14 +74,16 @@ test('multiple expectations combined', async ({ client, server }) => {
   expect(text).toContain('### Page');
 });
 
-test('no expectations = full response (backwards compatible)', async ({ client, server }) => {
+test('no expectations = optimized defaults (code/tabs/downloads excluded)', async ({ client, server }) => {
   const result = await client.callTool({
     name: 'browser_navigate',
     arguments: { url: server.HELLO_WORLD },
   });
 
   const text = result.content[0].text;
-  expect(text).toContain('### Ran Playwright code');
+  // Code excluded by default (saves ~200-500 tokens per call)
+  expect(text).not.toContain('### Ran Playwright code');
+  // Core sections still present
   expect(text).toContain('### Snapshot');
   expect(text).toContain('### Page');
 });

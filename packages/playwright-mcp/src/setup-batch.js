@@ -25,6 +25,7 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
   const { filterByViewportApprox, injectViewportSchema } = require('./viewport-filter');
   const { callToolWithStaleRefRetry } = require('./stale-ref-resolver');
   const { parseResponseBudget, enforceResponseBudget } = require('./response-budget');
+  const { compactSnapshot } = require('./snapshot-compactor');
 
   // Regex для snapshot extract/replace - вызывается ОДИН раз за pipeline (#4 optimization)
   const SNAPSHOT_RE = /(### Snapshot\n)([\s\S]*?)(?=\n### |\s*$)/;
@@ -33,6 +34,10 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
    * Consolidated snapshot pipeline: extract ONCE -> transform -> replace ONCE.
    * Replaces 3 separate regex extract+replace cycles (~6 regex ops) with 2 (~1 extract + 1 replace).
    */
+  const fs = require('fs');
+  const path = require('path');
+  const SNAPSHOT_FILE_RE = /\[Snapshot\]\(([^)]+)\)/;
+
   function applySnapshotPipeline(result, backend, truncationOpts, viewportOnly, diffEnabled) {
     if (!result || !result.content) return result;
 
@@ -45,6 +50,26 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
       if (!match) return part;
 
       let snapshotContent = match[2];
+
+      // Playwright-core saves snapshots to .yml files. If we find a file reference,
+      // read the file, compact it, and write it back. The response text stays as-is (link).
+      const fileMatch = snapshotContent.match(SNAPSHOT_FILE_RE);
+      if (fileMatch) {
+        try {
+          const filePath = path.resolve(process.cwd(), fileMatch[1]);
+          const fileContent = fs.readFileSync(filePath, 'utf-8');
+          const compacted = compactSnapshot(fileContent);
+          if (compacted !== fileContent) {
+            fs.writeFileSync(filePath, compacted, 'utf-8');
+            changed = true;
+          }
+        } catch {}
+        return part;
+      }
+
+      // Inline snapshot - process directly
+      // Transform 0: compact (strip non-interactive refs, cursor hints) - always
+      snapshotContent = compactSnapshot(snapshotContent);
 
       // Transform 1: truncation
       if (truncationOpts)
@@ -77,6 +102,23 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
   const DEFAULT_BUDGET = 4000;
   const globalBudget = parseResponseBudget(process.argv) || DEFAULT_BUDGET;
 
+  // Дефолтные expectations: code/tabs/downloads отключены (экономия ~300-700 tokens/call).
+  // Агент может включить обратно: expectations: { includeCode: true }
+  const DEFAULT_EXP = {
+    includeSnapshot: true,
+    includeCode: false,
+    includePage: true,
+    includeConsole: true,
+    includeModal: true,
+    includeDownloads: false,
+    includeTabs: false,
+  };
+
+  // Дефолтные imageOptions для скриншотов: JPEG q80, maxWidth 800.
+  // Без этого скриншот 1280x720 PNG = ~385KB base64 = ~96k tokens.
+  // С дефолтами: JPEG 800px = ~30-50KB = ~8-12k tokens.
+  const DEFAULT_IMAGE_OPTS = { quality: 80, maxWidth: 800 };
+
   // Keys we strip from args before passing to playwright-core
   const CUSTOM_KEYS = new Set(['expectations', 'filter', 'imageOptions', 'snapshotOptions', 'viewportOnly']);
 
@@ -103,23 +145,19 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
     }
 
     if (!hasCustom)
-      return { cleanArgs: args, expectations: null, filter: null, imageOptions: null, truncationOpts: null, viewportOnly: false };
+      return { cleanArgs: args, expectations: { ...DEFAULT_EXP }, filter: null, imageOptions: null, truncationOpts: null, viewportOnly: false };
 
     // Extract all at once
     const { expectations: rawExp, filter, imageOptions, snapshotOptions, viewportOnly, ...cleanArgs } = args;
 
-    // Parse expectations (inline - avoids function call overhead)
-    let expectations = null;
+    // Parse expectations: merge agent-specified with defaults.
+    // Explicit true/false overrides defaults. Missing keys use defaults.
+    let expectations = { ...DEFAULT_EXP };
     if (rawExp && typeof rawExp === 'object') {
-      expectations = {
-        includeSnapshot: rawExp.includeSnapshot !== false,
-        includeCode: rawExp.includeCode !== false,
-        includePage: rawExp.includePage !== false,
-        includeConsole: rawExp.includeConsole !== false,
-        includeModal: rawExp.includeModal !== false,
-        includeDownloads: rawExp.includeDownloads !== false,
-        includeTabs: rawExp.includeTabs !== false,
-      };
+      for (const key of Object.keys(DEFAULT_EXP)) {
+        if (key in rawExp)
+          expectations[key] = rawExp[key] !== false;
+      }
       if (rawExp.diff === true) expectations.diff = true;
     }
 
@@ -146,6 +184,10 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
 
     // Unified extraction (one pass)
     const opts = extractAllOptions(args);
+
+    // Дефолтные imageOptions для скриншотов (если агент не указал)
+    if (name === 'browser_take_screenshot' && !opts.imageOptions)
+      opts.imageOptions = DEFAULT_IMAGE_OPTS;
 
     // Native JPEG pass-through: если нужен только quality без resize,
     // передаем type/quality напрямую в playwright-core (экономим decode/encode цикл ~200-400ms)
@@ -180,15 +222,13 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
     if (opts.imageOptions && name === 'browser_take_screenshot' && !skipImageOptimization)
       processed = applyImageOptimization(processed, opts.imageOptions);
 
-    // Snapshot-specific optimizations (skip for non-snapshot tools)
-    // Regex consolidation: extract snapshot ONCE, apply all transforms, replace ONCE
+    // Snapshot pipeline: always runs for snapshot-producing tools.
+    // At minimum does compaction (strip non-interactive refs, cursor hints).
+    // Additionally: truncation, viewport filter, diff when requested.
     if (name === 'browser_snapshot' || name === 'browser_navigate' ||
         name === 'browser_click' || name === 'browser_type') {
       const diffEnabled = opts.expectations && opts.expectations.diff === true;
-      const needsProcessing = opts.truncationOpts || opts.viewportOnly || diffEnabled;
-
-      if (needsProcessing)
-        processed = applySnapshotPipeline(processed, this, opts.truncationOpts, opts.viewportOnly, diffEnabled);
+      processed = applySnapshotPipeline(processed, this, opts.truncationOpts, opts.viewportOnly, diffEnabled);
     }
 
     // Result filters (tool-specific, guarded)

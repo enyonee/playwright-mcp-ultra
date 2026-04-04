@@ -29,15 +29,17 @@ const SECTION_TO_KEY = {
 // Sections that are NEVER filtered (core response)
 const ALWAYS_INCLUDE = new Set(['Result', 'Error']);
 
-// All defaults true = backwards compatible with upstream Microsoft
+// Optimized defaults: strip low-value sections that waste tokens.
+// Code/Tabs/Downloads are almost never useful for AI agents.
+// Agent can override: expectations: { includeCode: true }
 const DEFAULT_EXPECTATIONS = {
   includeSnapshot: true,
-  includeCode: true,
+  includeCode: false,
   includePage: true,
   includeConsole: true,
   includeModal: true,
-  includeDownloads: true,
-  includeTabs: true,
+  includeDownloads: false,
+  includeTabs: false,
 };
 
 /**
@@ -45,7 +47,7 @@ const DEFAULT_EXPECTATIONS = {
  */
 const EXPECTATIONS_JSON_SCHEMA = {
   type: 'object',
-  description: 'Control which sections to include in the response. Omit to include all (default). Set fields to false to reduce token usage.',
+  description: 'Control which sections to include in the response. By default, low-value sections (code, tabs, downloads) are excluded. Set fields to true to include them.',
   properties: {
     includeSnapshot: {
       type: 'boolean',
@@ -53,7 +55,7 @@ const EXPECTATIONS_JSON_SCHEMA = {
     },
     includeCode: {
       type: 'boolean',
-      description: 'Include generated Playwright code (default: true). Rarely needed by AI agents.',
+      description: 'Include generated Playwright code (default: false). Rarely needed by AI agents.',
     },
     includePage: {
       type: 'boolean',
@@ -69,11 +71,11 @@ const EXPECTATIONS_JSON_SCHEMA = {
     },
     includeDownloads: {
       type: 'boolean',
-      description: 'Include download info (default: true).',
+      description: 'Include download info (default: false). Set true if monitoring downloads.',
     },
     includeTabs: {
       type: 'boolean',
-      description: 'Include open tabs list (default: true).',
+      description: 'Include open tabs list (default: false). Set true for multi-tab workflows.',
     },
     diff: {
       type: 'boolean',

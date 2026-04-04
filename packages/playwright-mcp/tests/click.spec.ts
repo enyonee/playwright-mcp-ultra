@@ -32,8 +32,8 @@ test('browser_click', async ({ client, server }) => {
     name: 'browser_navigate',
     arguments: { url: server.PREFIX },
   })).toHaveResponse({
-    code: `await page.goto('${server.PREFIX}');`,
-    snapshot: expect.stringContaining(`- button \"Submit\" [ref=e2]`),
+    // code excluded by default; button keeps ref (interactive element)
+    snapshot: expect.stringContaining(`button "Submit" [ref=e2]`),
   });
 
   expect(await client.callTool({
@@ -43,7 +43,7 @@ test('browser_click', async ({ client, server }) => {
       ref: 'e2',
     },
   })).toHaveResponse({
-    code: `await page.getByRole('button', { name: 'Submit' }).click();`,
+    // button is interactive, ref preserved
     snapshot: expect.stringContaining(`button "Submit" [active] [ref=e2]`),
   });
 });
