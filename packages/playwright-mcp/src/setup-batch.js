@@ -4,6 +4,7 @@
  * - expectations (response section filtering)
  * - snapshot diff tracking
  * - network/console result filters
+ * - screenshot image optimization (quality, maxWidth)
  *
  * Must be required before any MCP server creation (cli.js, index.js).
  *
@@ -25,6 +26,7 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
   const { extractExpectations, applyExpectations, injectExpectationsSchema } = require('./expectations');
   const { applySnapshotDiff } = require('./diff-tracker');
   const { extractFilter, applyNetworkFilter, applyConsoleFilter, injectFilterSchemas } = require('./result-filters');
+  const { extractImageOptions, applyImageOptimization, injectImageOptionsSchema } = require('./image-optimizer');
 
   // 1. Patch BrowserBackend.prototype.callTool:
   //    - Handle browser_batch_execute
@@ -37,13 +39,18 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
 
     // Strip custom parameters before passing to playwright-core
     const { expectations, cleanArgs: argsNoExp } = extractExpectations(args);
-    const { filter, cleanArgs: finalArgs } = extractFilter(argsNoExp);
+    const { filter, cleanArgs: argsNoFilter } = extractFilter(argsNoExp);
+    const { imageOptions, cleanArgs: finalArgs } = extractImageOptions(argsNoFilter);
 
     const result = await originalCallTool.call(this, name, finalArgs, progress);
 
-    // Post-process: diff -> filter -> expectations (order matters)
+    // Post-process: image -> diff -> filter -> expectations (order matters)
+    const optimized = (name === 'browser_take_screenshot')
+      ? applyImageOptimization(result, imageOptions)
+      : result;
+
     const diffEnabled = expectations && expectations.diff === true;
-    const diffed = applySnapshotDiff(this, result, diffEnabled);
+    const diffed = applySnapshotDiff(this, optimized, diffEnabled);
 
     let filtered = diffed;
     if (name === 'browser_network_requests')
@@ -68,6 +75,7 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
         result.tools.push(batchMcpTool);
         injectExpectationsSchema(result.tools);
         injectFilterSchemas(result.tools);
+        injectImageOptionsSchema(result.tools);
         return result;
       };
     }
