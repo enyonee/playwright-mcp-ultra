@@ -181,12 +181,17 @@ function formatBatchResult(results, totalSteps, totalTimeMs) {
     if (result.content) {
       for (const part of result.content) {
         if (part.type === 'text' && part.text) {
+          // evaluate/snapshot/navigate возвращают полезные данные - показываем больше
+          const isDataTool = result.tool === 'browser_evaluate' || result.tool === 'browser_snapshot'
+            || result.tool === 'browser_navigate' || result.tool === 'browser_network_requests'
+            || result.tool === 'browser_console_messages';
+          const maxLines = isDataTool ? 30 : 5;
           const stepLines = part.text.split('\n');
-          if (stepLines.length <= 5) {
+          if (stepLines.length <= maxLines) {
             lines.push(part.text);
           } else {
-            lines.push(...stepLines.slice(0, 5));
-            lines.push(`... (${stepLines.length - 5} more lines)`);
+            lines.push(...stepLines.slice(0, maxLines));
+            lines.push(`... (${stepLines.length - maxLines} more lines)`);
           }
         }
       }

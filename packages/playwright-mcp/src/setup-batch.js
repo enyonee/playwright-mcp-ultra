@@ -189,6 +189,13 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
     if (name === 'browser_take_screenshot' && !opts.imageOptions)
       opts.imageOptions = DEFAULT_IMAGE_OPTS;
 
+    // evaluate/run_code: snapshot бесполезен (агенту нужен ### Result, не дерево).
+    // Автоматически выключаем если агент не просил явно.
+    if ((name === 'browser_evaluate' || name === 'browser_run_code') && opts.expectations) {
+      if (!args || !args.expectations || !('includeSnapshot' in args.expectations))
+        opts.expectations.includeSnapshot = false;
+    }
+
     // Native JPEG pass-through: если нужен только quality без resize,
     // передаем type/quality напрямую в playwright-core (экономим decode/encode цикл ~200-400ms)
     let callArgs = opts.cleanArgs;
@@ -222,11 +229,15 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
     if (opts.imageOptions && name === 'browser_take_screenshot' && !skipImageOptimization)
       processed = applyImageOptimization(processed, opts.imageOptions);
 
-    // Snapshot pipeline: always runs for snapshot-producing tools.
+    // Snapshot pipeline: runs for all tools that produce accessibility tree snapshots.
     // At minimum does compaction (strip non-interactive refs, cursor hints).
     // Additionally: truncation, viewport filter, diff when requested.
     if (name === 'browser_snapshot' || name === 'browser_navigate' ||
-        name === 'browser_click' || name === 'browser_type') {
+        name === 'browser_click' || name === 'browser_type' ||
+        name === 'browser_select_option' || name === 'browser_press_key' ||
+        name === 'browser_hover' || name === 'browser_navigate_back' ||
+        name === 'browser_navigate_forward' || name === 'browser_drag' ||
+        name === 'browser_file_upload' || name === 'browser_handle_dialog') {
       const diffEnabled = opts.expectations && opts.expectations.diff === true;
       processed = applySnapshotPipeline(processed, this, opts.truncationOpts, opts.viewportOnly, diffEnabled);
     }

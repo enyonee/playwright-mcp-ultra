@@ -115,6 +115,25 @@ test('Result and Error sections are never filtered', async ({ client }) => {
   expect(text).toContain('### Result');
 });
 
+test('browser_evaluate auto-excludes snapshot by default', async ({ client, server }) => {
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  });
+
+  const result = await client.callTool({
+    name: 'browser_evaluate',
+    arguments: {
+      function: '() => document.title',
+    },
+  });
+
+  const text = result.content[0].text;
+  // Snapshot auto-excluded for evaluate (agent needs ### Result, not tree)
+  expect(text).not.toContain('### Snapshot');
+  expect(text).toContain('### Result');
+});
+
 test('batch defaultExpectations applies to all steps', async ({ client, server }) => {
   const result = await client.callTool({
     name: 'browser_batch_execute',
