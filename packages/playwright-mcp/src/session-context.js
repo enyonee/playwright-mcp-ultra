@@ -33,8 +33,9 @@ function getSession(backend) {
 /**
  * Record an action in the session.
  * Called after each tool call in the proxy pipeline.
+ * @param {boolean} parsePageState - only parse expensive regex for navigation/snapshot tools
  */
-function recordAction(backend, toolName, args, result) {
+function recordAction(backend, toolName, args, result, parsePageState) {
   const session = getSession(backend);
   session.toolCallCount++;
 
@@ -45,30 +46,36 @@ function recordAction(backend, toolName, args, result) {
     timestamp: Date.now(),
   });
 
-  // Cap history
+  // Cap history (use ring buffer approach - no slice allocation)
   if (session.actions.length > MAX_HISTORY)
-    session.actions = session.actions.slice(-MAX_HISTORY);
+    session.actions.shift();
 
-  // Extract page state from result
-  if (result && result.content) {
-    for (const part of result.content) {
-      if (part.type !== 'text' || !part.text) continue;
+  // Skip expensive regex parsing for tools that don't change page state
+  if (!parsePageState || !result || !result.content)
+    return;
 
-      // URL из Page section
-      const urlMatch = part.text.match(/### Page\n.*?(https?:\/\/\S+|data:\S+)/);
+  // Extract page state with indexOf fast-check before regex
+  for (const part of result.content) {
+    if (part.type !== 'text' || !part.text) continue;
+    const text = part.text;
+
+    // URL/Title from Page section (indexOf guard avoids regex on non-matching text)
+    if (text.indexOf('### Page') !== -1) {
+      const urlMatch = text.match(/### Page\n.*?(https?:\/\/\S+|data:\S+)/);
       if (urlMatch) session.currentUrl = urlMatch[1];
 
-      // Title
-      const titleMatch = part.text.match(/### Page\n-\s*\[(.*?)\]/);
+      const titleMatch = text.match(/### Page\n-\s*\[(.*?)\]/);
       if (titleMatch) session.currentTitle = titleMatch[1];
+    }
 
-      // Detect page type from snapshot hints
-      if (part.text.includes('### Snapshot')) {
-        session.pageType = detectPageType(part.text);
-      }
+    // Page type from snapshot (only if snapshot section exists)
+    if (text.indexOf('### Snapshot') !== -1) {
+      session.pageType = detectPageType(text);
+    }
 
-      // Track errors
-      const errorMatch = part.text.match(/### Error\n([\s\S]*?)(?=\n### |\s*$)/);
+    // Track errors (only if error section exists)
+    if (text.indexOf('### Error') !== -1) {
+      const errorMatch = text.match(/### Error\n([\s\S]*?)(?=\n### |\s*$)/);
       if (errorMatch) {
         session.errors.push({
           tool: toolName,
@@ -76,7 +83,7 @@ function recordAction(backend, toolName, args, result) {
           timestamp: Date.now(),
         });
         if (session.errors.length > MAX_ERRORS)
-          session.errors = session.errors.slice(-MAX_ERRORS);
+          session.errors.shift();
       }
     }
   }

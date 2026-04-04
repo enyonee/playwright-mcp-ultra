@@ -1,22 +1,9 @@
 /**
- * Patches playwright-core to add custom enhancements:
- * - browser_batch_execute tool
- * - browser_assert tool (compact page verification)
- * - browser_session_context tool (action history summary)
- * - expectations (response section filtering)
- * - snapshot diff tracking
- * - snapshot truncation (maxTokens, maxDepth)
- * - viewport-only snapshot filtering
- * - network/console result filters
- * - screenshot image optimization (quality, maxWidth)
- * - stale ref auto-retry
- * - global response budget enforcement
+ * Patches playwright-core to add custom enhancements.
+ * Performance-optimized: unified arg extraction, early-exit pipeline,
+ * lazy session recording, batch fast path.
  *
  * Must be required before any MCP server creation (cli.js, index.js).
- *
- * Approach: patch class prototypes (BrowserBackend, Server) rather than
- * module exports, because playwright-core uses non-configurable getters
- * for its module.exports that can't be reassigned.
  */
 
 const { createRequire } = require('module');
@@ -24,29 +11,83 @@ const mcpBundle = require('playwright-core/lib/mcpBundle');
 const pcRequire = createRequire(require.resolve('playwright-core/lib/tools/mcp/program'));
 const { BrowserBackend } = pcRequire('../backend/browserBackend');
 
-// Guard against double-patching (e.g. if require cache is cleared)
 if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
   BrowserBackend.prototype.__mcpOptimizedPatched = true;
 
   const { executeBatch, batchToolMcpSchema } = require('./batch-middleware');
-  const { extractExpectations, applyExpectations, injectExpectationsSchema } = require('./expectations');
+  const { applyExpectations, injectExpectationsSchema } = require('./expectations');
   const { applySnapshotDiff } = require('./diff-tracker');
-  const { extractFilter, applyNetworkFilter, applyConsoleFilter, injectFilterSchemas } = require('./result-filters');
-  const { extractImageOptions, applyImageOptimization, injectImageOptionsSchema } = require('./image-optimizer');
+  const { applyNetworkFilter, applyConsoleFilter, injectFilterSchemas } = require('./result-filters');
+  const { applyImageOptimization, injectImageOptionsSchema } = require('./image-optimizer');
   const { executeAssert, assertToolMcpSchema } = require('./assert');
   const { recordAction, getSessionContext, sessionContextMcpSchema } = require('./session-context');
-  const { extractTruncationOptions, applySnapshotTruncation, injectTruncationSchema } = require('./snapshot-truncator');
-  const { extractViewportOption, applyViewportFilter, injectViewportSchema } = require('./viewport-filter');
+  const { applySnapshotTruncation, injectTruncationSchema } = require('./snapshot-truncator');
+  const { applyViewportFilter, injectViewportSchema } = require('./viewport-filter');
   const { callToolWithStaleRefRetry } = require('./stale-ref-resolver');
   const { parseResponseBudget, enforceResponseBudget } = require('./response-budget');
 
-  // Parse global budget from process args (--max-response-size=N)
   const globalBudget = parseResponseBudget(process.argv);
+
+  // Keys we strip from args before passing to playwright-core
+  const CUSTOM_KEYS = new Set(['expectations', 'filter', 'imageOptions', 'snapshotOptions', 'viewportOnly']);
+
+  // Tools where session recording extracts page state (expensive regex)
+  const PAGE_STATE_TOOLS = new Set([
+    'browser_navigate', 'browser_navigate_back', 'browser_navigate_forward',
+    'browser_snapshot', 'browser_click', 'browser_type', 'browser_select_option',
+    'browser_press_key', 'browser_hover',
+  ]);
+
+  /**
+   * Unified arg extraction: one pass strips all custom keys.
+   * Returns custom options + clean args for playwright-core.
+   * Zero intermediate objects when no custom keys present.
+   */
+  function extractAllOptions(args) {
+    if (!args || typeof args !== 'object')
+      return { cleanArgs: args, expectations: null, filter: null, imageOptions: null, truncationOpts: null, viewportOnly: false };
+
+    // Fast check: any custom keys present?
+    let hasCustom = false;
+    for (const key of CUSTOM_KEYS) {
+      if (key in args) { hasCustom = true; break; }
+    }
+
+    if (!hasCustom)
+      return { cleanArgs: args, expectations: null, filter: null, imageOptions: null, truncationOpts: null, viewportOnly: false };
+
+    // Extract all at once
+    const { expectations: rawExp, filter, imageOptions, snapshotOptions, viewportOnly, ...cleanArgs } = args;
+
+    // Parse expectations (inline - avoids function call overhead)
+    let expectations = null;
+    if (rawExp && typeof rawExp === 'object') {
+      expectations = {
+        includeSnapshot: rawExp.includeSnapshot !== false,
+        includeCode: rawExp.includeCode !== false,
+        includePage: rawExp.includePage !== false,
+        includeConsole: rawExp.includeConsole !== false,
+        includeModal: rawExp.includeModal !== false,
+        includeDownloads: rawExp.includeDownloads !== false,
+        includeTabs: rawExp.includeTabs !== false,
+      };
+      if (rawExp.diff === true) expectations.diff = true;
+    }
+
+    return {
+      cleanArgs,
+      expectations,
+      filter: filter || null,
+      imageOptions: imageOptions || null,
+      truncationOpts: snapshotOptions || null,
+      viewportOnly: !!viewportOnly,
+    };
+  }
 
   // 1. Patch BrowserBackend.prototype.callTool
   const originalCallTool = BrowserBackend.prototype.callTool;
   BrowserBackend.prototype.callTool = async function(name, args, progress) {
-    // Custom tools that don't go through playwright-core
+    // Custom tools - no pipeline overhead
     if (name === 'browser_batch_execute')
       return executeBatch(this, args, progress || (() => {}));
     if (name === 'browser_assert')
@@ -54,47 +95,50 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
     if (name === 'browser_session_context')
       return getSessionContext(this);
 
-    // Strip custom parameters before passing to playwright-core
-    const { expectations, cleanArgs: argsNoExp } = extractExpectations(args);
-    const { filter, cleanArgs: argsNoFilter } = extractFilter(argsNoExp);
-    const { imageOptions, cleanArgs: argsNoImage } = extractImageOptions(argsNoFilter);
-    const { truncationOpts, cleanArgs: argsNoTrunc } = extractTruncationOptions(argsNoImage);
-    const { viewportOnly, cleanArgs: finalArgs } = extractViewportOption(argsNoTrunc);
+    // Unified extraction (one pass)
+    const opts = extractAllOptions(args);
 
-    // Call original with stale ref retry wrapper
-    const result = await callToolWithStaleRefRetry(originalCallTool, this, name, finalArgs, progress);
+    // Call original (with stale ref retry for interactive tools)
+    const result = await callToolWithStaleRefRetry(originalCallTool, this, name, opts.cleanArgs, progress);
 
-    // Record action in session context
-    recordAction(this, name, finalArgs, result);
+    // Session recording (lazy: expensive page state parsing only for relevant tools)
+    recordAction(this, name, opts.cleanArgs, result, PAGE_STATE_TOOLS.has(name));
 
-    // Post-process pipeline (order matters):
-    // image -> truncation -> viewport -> diff -> filter -> expectations -> budget
+    // Post-processing pipeline with early exits (no allocation if option is null/false)
     let processed = result;
 
-    if (name === 'browser_take_screenshot')
-      processed = applyImageOptimization(processed, imageOptions);
+    // Image optimization (screenshot only)
+    if (opts.imageOptions && name === 'browser_take_screenshot')
+      processed = applyImageOptimization(processed, opts.imageOptions);
 
-    // Snapshot truncation (maxTokens/maxDepth) - before diff
-    processed = applySnapshotTruncation(processed, truncationOpts);
+    // Snapshot-specific optimizations (skip for non-snapshot tools)
+    if (name === 'browser_snapshot' || name === 'browser_navigate' ||
+        name === 'browser_click' || name === 'browser_type') {
+      if (opts.truncationOpts)
+        processed = applySnapshotTruncation(processed, opts.truncationOpts);
+      if (opts.viewportOnly)
+        processed = applyViewportFilter(processed, true);
 
-    // Viewport filter (above-the-fold) - before diff
-    processed = applyViewportFilter(processed, viewportOnly);
+      const diffEnabled = opts.expectations && opts.expectations.diff === true;
+      if (diffEnabled)
+        processed = applySnapshotDiff(this, processed, true);
+    }
 
-    // Diff tracking
-    const diffEnabled = expectations && expectations.diff === true;
-    processed = applySnapshotDiff(this, processed, diffEnabled);
+    // Result filters (tool-specific, guarded)
+    if (opts.filter) {
+      if (name === 'browser_network_requests')
+        processed = applyNetworkFilter(processed, opts.filter);
+      else if (name === 'browser_console_messages')
+        processed = applyConsoleFilter(processed, opts.filter);
+    }
 
-    // Result filters
-    if (name === 'browser_network_requests')
-      processed = applyNetworkFilter(processed, filter);
-    else if (name === 'browser_console_messages')
-      processed = applyConsoleFilter(processed, filter);
+    // Section filtering
+    if (opts.expectations)
+      processed = applyExpectations(processed, opts.expectations);
 
-    // Expectations (section filtering)
-    processed = applyExpectations(processed, expectations);
-
-    // Global budget enforcement (last - compresses whatever is left)
-    processed = enforceResponseBudget(processed, name, globalBudget);
+    // Global budget (only if configured)
+    if (globalBudget)
+      processed = enforceResponseBudget(processed, name, globalBudget);
 
     return processed;
   };
@@ -110,11 +154,7 @@ if (!BrowserBackend.prototype.__mcpOptimizedPatched) {
       const originalHandler = handler;
       handler = async function(...args) {
         const result = await originalHandler.apply(this, args);
-        // Add custom tools
-        result.tools.push(batchMcpTool);
-        result.tools.push(assertMcpTool);
-        result.tools.push(sessionContextMcpTool);
-        // Inject custom schemas into existing tools
+        result.tools.push(batchMcpTool, assertMcpTool, sessionContextMcpTool);
         injectExpectationsSchema(result.tools);
         injectFilterSchemas(result.tools);
         injectImageOptionsSchema(result.tools);

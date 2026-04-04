@@ -31,6 +31,17 @@ function applySnapshotDiff(backend, result, diffEnabled) {
   if (!result || !result.content)
     return result;
 
+  // Fast check: any text part with snapshot?
+  let hasSnapshot = false;
+  for (const part of result.content) {
+    if (part.type === 'text' && part.text && part.text.indexOf('### Snapshot') !== -1) {
+      hasSnapshot = true;
+      break;
+    }
+  }
+  if (!hasSnapshot) return result;
+
+  let changed = false;
   const content = result.content.map(part => {
     if (part.type !== 'text' || !part.text)
       return part;
@@ -42,33 +53,30 @@ function applySnapshotDiff(backend, result, diffEnabled) {
     const state = getState(backend);
     const hash = crypto.createHash('sha256').update(snapshotContent).digest('hex');
 
-    if (!diffEnabled) {
-      // Don't track when diff is disabled - avoids cross-tool state contamination
-      // (e.g. navigate returns file refs, snapshot returns inline YAML)
+    if (!diffEnabled)
       return part;
-    }
 
     if (state.hash === hash) {
-      // Identical snapshot - huge token savings
+      changed = true;
       return { ...part, text: replaceSnapshot(part.text, '[Snapshot unchanged]') };
     }
 
     if (state.lines !== null) {
-      // Compute line diff
       const newLines = snapshotContent.split('\n');
       const diffText = formatLineDiff(state.lines, newLines);
       state.hash = hash;
       state.lines = newLines;
+      changed = true;
       return { ...part, text: replaceSnapshot(part.text, diffText) };
     }
 
-    // First snapshot ever - return full, store for next time
     state.hash = hash;
     state.lines = snapshotContent.split('\n');
     return part;
   });
 
-  return { ...result, content };
+  // Avoid allocating new result object if nothing changed
+  return changed ? { ...result, content } : result;
 }
 
 /**
