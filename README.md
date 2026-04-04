@@ -4,45 +4,55 @@
 
 A Model Context Protocol (MCP) server that provides browser automation capabilities using [Playwright](https://playwright.dev). This server enables LLMs to interact with web pages through structured accessibility snapshots, bypassing the need for screenshots or visually-tuned models.
 
-### Fork Enhancements
+### Fork Enhancements (v0.1.0)
 
-This fork adds **11 proxy-layer optimizations** that reduce token usage by 40-95% per tool call and improve wall-clock performance. All features are opt-in via tool parameters - without them, behavior is identical to upstream.
+This fork adds proxy-layer optimizations that reduce token usage by **~60x** on heavy pages. Optimized defaults work out of the box - no configuration needed. All enhancements can be fine-tuned via tool parameters.
+
+#### Optimized defaults (always active, zero configuration)
+
+| Feature | What it does | Savings |
+|---------|-------------|---------|
+| Snapshot compactor | Strips `[ref=...]` from non-interactive elements (generic, banner, navigation, etc.) and `[cursor=*]` everywhere. Interactive elements (button, link, textbox, etc.) keep their refs. | ~25-35% per snapshot |
+| Default expectations | Code, tabs, downloads sections excluded from responses. Agent can override: `expectations: {includeCode: true}`. | ~300-700 tokens/call |
+| Default screenshot optimization | All screenshots automatically converted to JPEG quality 80, maxWidth 800px. No need to pass `imageOptions`. | ~80% vs raw PNG |
+| Response budget | 4000-token default cap. Progressive compression: remove low-priority sections -> reduce depth -> proportional truncate -> hard cut. Override with `--max-response-size=N`. | Prevents oversized responses |
+| Evaluate auto-exclude snapshot | `browser_evaluate` and `browser_run_code` automatically exclude accessibility tree (agent needs `### Result`, not ARIA tree). | ~80% for evaluate calls |
+| Stale ref auto-retry | Detects "element not attached" errors, takes a fresh snapshot, retries transparently. | Eliminates manual re-snapshot loops |
 
 #### New tools
 
 | Tool | What it does | Token savings |
 |------|-------------|---------------|
-| `browser_batch_execute` | Run multiple actions in a single MCP call (navigate + type + click + snapshot). Eliminates round-trip overhead. | ~60% (N calls -> 1) |
-| `browser_assert` | Run up to 20 assertions against page state (text visible, element exists, URL, attributes). Returns compact pass/fail instead of full snapshot. | ~90% vs snapshot + parse |
-| `browser_session_context` | Get a compact summary of the session: URL, title, page type, recent actions, errors (~100 tokens). Use after context compaction to recall what happened. | ~95% vs snapshot |
+| `browser_batch_execute` | Run multiple actions in a single MCP call (navigate + type + click + snapshot). Consecutive read-only tools run in parallel. Data tools (evaluate, snapshot) show up to 30 lines per step. | ~60% (N calls -> 1) |
+| `browser_assert` | Run up to 20 assertions against page state (text visible, element exists, URL, attributes). Returns compact pass/fail. | ~90% vs snapshot + parse |
+| `browser_session_context` | Compact session summary: URL, title, page type, recent actions, errors (~100 tokens). | ~95% vs snapshot |
 
-#### New tool parameters
+#### Opt-in tool parameters
 
 | Parameter | Applies to | What it does |
 |-----------|-----------|--------------|
-| `expectations` | All tools | Control which response sections to include. `{includeSnapshot: false}` drops the ARIA tree. `{diff: true}` returns only changed lines. |
-| `filter` | `browser_network_requests`, `browser_console_messages` | Filter results server-side: `{urlPattern: "/api/", methods: ["POST"], statusCodes: [400,500]}` for network, `{levels: ["error"]}` for console. |
-| `imageOptions` | `browser_take_screenshot` | Optimize screenshots: `{format: "jpeg", quality: 50, maxWidth: 800}`. JPEG q50 at 800px is ~70% smaller than default PNG. |
-| `snapshotOptions` | `browser_snapshot`, `browser_navigate`, `browser_click`, `browser_type` | Truncate snapshots: `{maxTokens: 500, maxDepth: 3, prioritizeInteractable: true}`. Keeps buttons/inputs over static text. |
-| `viewportOnly` | Same as snapshotOptions | `true` returns only the visible portion of the ARIA tree (~60% of top-level subtrees by document order). |
+| `expectations` | All tools | Fine-tune response sections. `{includeSnapshot: false}` drops ARIA tree. `{diff: true}` returns only changed lines vs previous snapshot. |
+| `filter` | `browser_network_requests`, `browser_console_messages` | Server-side filtering: `{urlPattern: "/api/", methods: ["POST"], statusCodes: [400,500]}` for network, `{levels: ["error"]}` for console. |
+| `imageOptions` | `browser_take_screenshot` | Override screenshot defaults: `{quality: 50, maxWidth: 400}`. Default: JPEG quality 80, maxWidth 800. |
+| `snapshotOptions` | All snapshot-producing tools | Truncate snapshots: `{maxTokens: 500, maxDepth: 3, prioritizeInteractable: true}`. Keeps buttons/inputs over static text. |
+| `viewportOnly` | Same as snapshotOptions | `true` returns only the visible portion of the ARIA tree (~60% reduction on long pages). |
 
-#### Transparent enhancements (always active)
+#### Performance
 
-| Feature | What it does |
-|---------|-------------|
-| Stale ref auto-retry | Detects "element not attached" errors, takes a fresh snapshot, retries the action transparently. No more manual re-snapshot loops. |
-| Response budget | `--max-response-size=N` CLI flag. Progressive compression: remove low-priority sections -> reduce depth -> proportional truncate -> hard cut. |
-| Unified arg extraction | Single-pass destructuring replaces 5 chained extract functions. Zero allocation when no custom keys present. |
-| Lazy session recording | Expensive regex parsing only runs for page-state-changing tools (navigate, click, type), not every call. |
+| Scenario | Tokens | Notes |
+|----------|--------|-------|
+| CertiK Skynet full workflow (navigate + 2x evaluate + batch 3-step + snapshot) | ~2,500 | Without optimizations: ~150,000 tokens. **60x reduction.** |
+| 6-step batch (type + enter + snapshot + screenshot + network + console) | ~800 | Single MCP call, 921ms wall time |
+| Heavy page snapshot (snapshotOptions maxTokens: 1500) | ~1,500 | Raw: ~49,000 tokens. 97% reduction. |
+| Screenshot (default JPEG q80 w800) | ~8-12k | vs ~96k raw PNG. 80% reduction. |
 
-#### Performance (Wikipedia live test)
+#### Diagnostics
 
-| Scenario | Time | Notes |
-|----------|------|-------|
-| 6-step batch (type + enter + snapshot + screenshot + network + console) | 921ms | Single MCP call |
-| 7-step search flow (navigate + type + press + wait + snapshot + assert + screenshot) | 5.7s | Includes assertion evaluation |
-| Snapshot with viewportOnly + maxTokens | 72ms | ~40% of full snapshot size |
-| Screenshot JPEG q50 w800 | 291ms | ~70% smaller than PNG |
+Set `MCP_DEBUG_SIZE=1` environment variable to log raw and processed response sizes to stderr:
+```
+[mcp-raw] browser_snapshot: 195612 chars (~48903 tokens)
+[mcp-size] browser_snapshot: 6004 chars (~1501 tokens)
+```
 
 ### Playwright MCP vs Playwright CLI
 
@@ -69,7 +79,33 @@ node utils/generate-links.js
 
 ### Getting started
 
-First, install the Playwright MCP server with your client.
+#### This fork (playwright-mcp-ultra)
+
+Clone and install locally to get all optimizations:
+
+```bash
+git clone https://github.com/enyonee/playwright-mcp-ultra.git
+cd playwright-mcp-ultra
+npm install
+npx playwright install chromium
+```
+
+MCP client config (Claude Code, Cursor, etc.):
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "node",
+      "args": ["/path/to/playwright-mcp-ultra/packages/playwright-mcp/cli-optimized.js"]
+    }
+  }
+}
+```
+
+All optimizations are active by default. No extra flags needed.
+
+#### Upstream (standard @playwright/mcp)
 
 **Standard config** works in most of the tools:
 
