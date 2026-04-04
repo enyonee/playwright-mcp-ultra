@@ -1,12 +1,54 @@
-## Playwright MCP
+## Playwright MCP Ultra
+
+> **Fork of [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp)** with proxy-layer optimizations for token efficiency and execution speed. All enhancements are non-invasive - they intercept `BrowserBackend.prototype.callTool` without modifying playwright-core internals, so upstream updates merge cleanly.
 
 A Model Context Protocol (MCP) server that provides browser automation capabilities using [Playwright](https://playwright.dev). This server enables LLMs to interact with web pages through structured accessibility snapshots, bypassing the need for screenshots or visually-tuned models.
+
+### Fork Enhancements
+
+This fork adds **11 proxy-layer optimizations** that reduce token usage by 40-95% per tool call and improve wall-clock performance. All features are opt-in via tool parameters - without them, behavior is identical to upstream.
+
+#### New tools
+
+| Tool | What it does | Token savings |
+|------|-------------|---------------|
+| `browser_batch_execute` | Run multiple actions in a single MCP call (navigate + type + click + snapshot). Eliminates round-trip overhead. | ~60% (N calls -> 1) |
+| `browser_assert` | Run up to 20 assertions against page state (text visible, element exists, URL, attributes). Returns compact pass/fail instead of full snapshot. | ~90% vs snapshot + parse |
+| `browser_session_context` | Get a compact summary of the session: URL, title, page type, recent actions, errors (~100 tokens). Use after context compaction to recall what happened. | ~95% vs snapshot |
+
+#### New tool parameters
+
+| Parameter | Applies to | What it does |
+|-----------|-----------|--------------|
+| `expectations` | All tools | Control which response sections to include. `{includeSnapshot: false}` drops the ARIA tree. `{diff: true}` returns only changed lines. |
+| `filter` | `browser_network_requests`, `browser_console_messages` | Filter results server-side: `{urlPattern: "/api/", methods: ["POST"], statusCodes: [400,500]}` for network, `{levels: ["error"]}` for console. |
+| `imageOptions` | `browser_take_screenshot` | Optimize screenshots: `{format: "jpeg", quality: 50, maxWidth: 800}`. JPEG q50 at 800px is ~70% smaller than default PNG. |
+| `snapshotOptions` | `browser_snapshot`, `browser_navigate`, `browser_click`, `browser_type` | Truncate snapshots: `{maxTokens: 500, maxDepth: 3, prioritizeInteractable: true}`. Keeps buttons/inputs over static text. |
+| `viewportOnly` | Same as snapshotOptions | `true` returns only the visible portion of the ARIA tree (~60% of top-level subtrees by document order). |
+
+#### Transparent enhancements (always active)
+
+| Feature | What it does |
+|---------|-------------|
+| Stale ref auto-retry | Detects "element not attached" errors, takes a fresh snapshot, retries the action transparently. No more manual re-snapshot loops. |
+| Response budget | `--max-response-size=N` CLI flag. Progressive compression: remove low-priority sections -> reduce depth -> proportional truncate -> hard cut. |
+| Unified arg extraction | Single-pass destructuring replaces 5 chained extract functions. Zero allocation when no custom keys present. |
+| Lazy session recording | Expensive regex parsing only runs for page-state-changing tools (navigate, click, type), not every call. |
+
+#### Performance (Wikipedia live test)
+
+| Scenario | Time | Notes |
+|----------|------|-------|
+| 6-step batch (type + enter + snapshot + screenshot + network + console) | 921ms | Single MCP call |
+| 7-step search flow (navigate + type + press + wait + snapshot + assert + screenshot) | 5.7s | Includes assertion evaluation |
+| Snapshot with viewportOnly + maxTokens | 72ms | ~40% of full snapshot size |
+| Screenshot JPEG q50 w800 | 291ms | ~70% smaller than PNG |
 
 ### Playwright MCP vs Playwright CLI
 
 This package provides MCP interface into Playwright. If you are using a **coding agent**, you might benefit from using the [CLI+SKILLS](https://github.com/microsoft/playwright-cli) instead.
 
-- **CLI**: Modern **coding agents** increasingly favor CLI–based workflows exposed as SKILLs over MCP because CLI invocations are more token-efficient: they avoid loading large tool schemas and verbose accessibility trees into the model context, allowing agents to act through concise, purpose-built commands. This makes CLI + SKILLs better suited for high-throughput coding agents that must balance browser automation with large codebases, tests, and reasoning within limited context windows.<br>**Learn more about [Playwright CLI with SKILLS](https://github.com/microsoft/playwright-cli)**.
+- **CLI**: Modern **coding agents** increasingly favor CLI-based workflows exposed as SKILLs over MCP because CLI invocations are more token-efficient: they avoid loading large tool schemas and verbose accessibility trees into the model context, allowing agents to act through concise, purpose-built commands. This makes CLI + SKILLs better suited for high-throughput coding agents that must balance browser automation with large codebases, tests, and reasoning within limited context windows.<br>**Learn more about [Playwright CLI with SKILLS](https://github.com/microsoft/playwright-cli)**.
 
 - **MCP**: MCP remains relevant for specialized agentic loops that benefit from persistent state, rich introspection, and iterative reasoning over page structure, such as exploratory automation, self-healing tests, or long-running autonomous workflows where maintaining continuous browser context outweighs token cost concerns.
 
