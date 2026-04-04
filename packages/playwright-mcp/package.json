@@ -29,7 +29,7 @@
     "./package.json": "./package.json",
     ".": {
       "types": "./index.d.ts",
-      "default": "./index.js"
+      "default": "./index-optimized.js"
     }
   },
   "dependencies": {
@@ -37,6 +37,6 @@
     "playwright-core": "1.60.0-alpha-1774999321000"
   },
   "bin": {
-    "playwright-mcp": "cli.js"
+    "playwright-mcp": "cli-optimized.js"
   }
 }

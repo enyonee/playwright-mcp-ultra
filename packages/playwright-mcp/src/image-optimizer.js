@@ -10,12 +10,11 @@
  */
 
 const { PNG, jpegjs } = require('playwright-core/lib/utilsBundle');
-const { scaleImageToSize } = require(
-  require('path').join(
-    require('path').dirname(require.resolve('playwright-core/package.json')),
-    'lib/utils/isomorphic/imageUtils.js'
-  )
-);
+
+// imageUtils не в exports playwright-core, доступ через абсолютный путь
+const path = require('path');
+const imageUtilsPath = path.join(path.dirname(require.resolve('playwright-core/package.json')), 'lib/utils/isomorphic/imageUtils.js');
+const { scaleImageToSize } = require(imageUtilsPath);
 
 const IMAGE_OPTIONS_SCHEMA = {
   type: 'object',

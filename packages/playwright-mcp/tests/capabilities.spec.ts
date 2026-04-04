@@ -18,8 +18,10 @@ import { test, expect } from './fixtures';
 
 test('test snapshot tool list', async ({ client }) => {
   const { tools } = await client.listTools();
-  expect(new Set(tools.map(t => t.name))).toEqual(new Set([
-    'browser_batch_execute',
+  const toolNames = tools.map(t => t.name);
+
+  // Все upstream-тулы на месте (superset check - не ломается при добавлении новых тулов upstream)
+  for (const name of [
     'browser_click',
     'browser_console_messages',
     'browser_drag',
@@ -41,7 +43,11 @@ test('test snapshot tool list', async ({ client }) => {
     'browser_tabs',
     'browser_take_screenshot',
     'browser_wait_for',
-  ]));
+  ])
+    expect(toolNames, `missing upstream tool: ${name}`).toContain(name);
+
+  // Наш кастомный тул
+  expect(toolNames).toContain('browser_batch_execute');
 });
 
 test('test capabilities (pdf)', async ({ startClient }) => {

@@ -15,6 +15,5 @@
  * limitations under the License.
  */
 
-require('./src/setup-batch');
 const { createConnection } = require('playwright-core/lib/tools/exports');
 module.exports = { createConnection };

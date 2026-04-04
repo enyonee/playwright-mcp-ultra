@@ -202,7 +202,7 @@ async function createTransport(args: string[], cwd: string, mcpMode: TestOptions
 
   const transport = new StdioClientTransport({
     command: 'node',
-    args: [path.join(__dirname, '../cli.js'), ...args],
+    args: [path.join(__dirname, '../cli-optimized.js'), ...args],
     cwd,
     stderr: 'pipe',
     env: {
