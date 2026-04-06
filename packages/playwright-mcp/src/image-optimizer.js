@@ -18,7 +18,7 @@ const { scaleImageToSize } = require(imageUtilsPath);
 
 const IMAGE_OPTIONS_SCHEMA = {
   type: 'object',
-  description: 'Image optimization for screenshots. Reduces token usage by compressing/resizing.',
+  description: 'Override default image optimization. Without this parameter, screenshots are auto-optimized to JPEG quality 80, maxWidth 800px.',
   properties: {
     quality: {
       type: 'number',

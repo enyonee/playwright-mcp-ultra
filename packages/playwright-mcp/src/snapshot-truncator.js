@@ -255,12 +255,20 @@ function replaceSnapshot(text, newContent) {
   );
 }
 
+// Tools that produce accessibility tree snapshots in their response
+const SNAPSHOT_TOOLS = new Set([
+  'browser_snapshot', 'browser_navigate', 'browser_click', 'browser_type',
+  'browser_select_option', 'browser_press_key', 'browser_hover',
+  'browser_navigate_back', 'browser_navigate_forward',
+  'browser_drag', 'browser_file_upload', 'browser_handle_dialog',
+]);
+
 /**
- * Inject snapshotOptions schema into browser_snapshot tool.
+ * Inject snapshotOptions schema into all snapshot-producing tools.
  */
 function injectTruncationSchema(tools) {
   for (const tool of tools) {
-    if (tool.name !== 'browser_snapshot')
+    if (!SNAPSHOT_TOOLS.has(tool.name))
       continue;
     if (!tool.inputSchema || !tool.inputSchema.properties)
       continue;

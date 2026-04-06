@@ -130,12 +130,20 @@ function replaceSnapshot(text, newContent) {
   );
 }
 
+// Tools that produce accessibility tree snapshots in their response
+const SNAPSHOT_TOOLS = new Set([
+  'browser_snapshot', 'browser_navigate', 'browser_click', 'browser_type',
+  'browser_select_option', 'browser_press_key', 'browser_hover',
+  'browser_navigate_back', 'browser_navigate_forward',
+  'browser_drag', 'browser_file_upload', 'browser_handle_dialog',
+]);
+
 /**
- * Inject viewportOnly option into browser_snapshot tool schema.
+ * Inject viewportOnly option into all snapshot-producing tool schemas.
  */
 function injectViewportSchema(tools) {
   for (const tool of tools) {
-    if (tool.name !== 'browser_snapshot')
+    if (!SNAPSHOT_TOOLS.has(tool.name))
       continue;
     if (!tool.inputSchema || !tool.inputSchema.properties)
       continue;

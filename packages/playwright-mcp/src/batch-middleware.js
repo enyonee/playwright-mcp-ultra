@@ -21,7 +21,9 @@ const BATCH_EXECUTE_SCHEMA = {
   title: 'Batch Execute Browser Actions',
   description: 'Execute multiple browser actions in a single call. ' +
     'PREFER this over individual tool calls when performing 2+ sequential operations. ' +
-    'Reduces round-trips and token usage. Actions execute in order; stops on first error by default.',
+    'Reduces round-trips and token usage. Actions execute in order; stops on first error by default. ' +
+    'Consecutive read-only steps (snapshot, screenshot, assert, network, console) run in parallel automatically. ' +
+    'Data tools (evaluate, snapshot, navigate) show up to 30 lines per step; action tools show 5.',
   type: 'destructive',
   inputSchema: BATCH_INPUT_SCHEMA,
 };
