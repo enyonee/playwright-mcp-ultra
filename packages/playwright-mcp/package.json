@@ -1,6 +1,6 @@
 {
   "name": "@enyonee/playwright-mcp-ultra",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Playwright MCP Ultra - fork with ~60x token optimization for AI agents",
   "repository": {
     "type": "git",
