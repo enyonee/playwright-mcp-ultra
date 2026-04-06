@@ -1,12 +1,12 @@
 {
-  "name": "@playwright/mcp",
-  "version": "0.0.70",
-  "description": "Playwright Tools for MCP",
+  "name": "@enyonee/playwright-mcp-ultra",
+  "version": "0.1.0",
+  "description": "Playwright MCP Ultra - fork with ~60x token optimization for AI agents",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/microsoft/playwright-mcp.git"
+    "url": "git+https://github.com/enyonee/playwright-mcp-ultra.git"
   },
-  "homepage": "https://playwright.dev",
+  "homepage": "https://github.com/enyonee/playwright-mcp-ultra",
   "engines": {
     "node": ">=18"
   },

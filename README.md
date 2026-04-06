@@ -81,7 +81,20 @@ node utils/generate-links.js
 
 #### This fork (playwright-mcp-ultra)
 
-Clone and install locally to get all optimizations:
+Install from npm - all optimizations active by default:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["@enyonee/playwright-mcp-ultra@latest"]
+    }
+  }
+}
+```
+
+Or install locally from source:
 
 ```bash
 git clone https://github.com/enyonee/playwright-mcp-ultra.git
@@ -89,8 +102,6 @@ cd playwright-mcp-ultra
 npm install
 npx playwright install chromium
 ```
-
-MCP client config (Claude Code, Cursor, etc.):
 
 ```json
 {
@@ -102,8 +113,6 @@ MCP client config (Claude Code, Cursor, etc.):
   }
 }
 ```
-
-All optimizations are active by default. No extra flags needed.
 
 #### Upstream (standard @playwright/mcp)
 

@@ -2,5 +2,9 @@
 !README.md
 !LICENSE
 !cli.js
+!cli-optimized.js
 !index.*
+!index-optimized.js
 !config.d.ts
+!src/**
+!package.json
