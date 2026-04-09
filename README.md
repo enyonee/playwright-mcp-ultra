@@ -70,7 +70,7 @@ This package provides MCP interface into Playwright. If you are using a **coding
 
 ### Requirements
 - Node.js 18 or newer
-- VS Code, Cursor, Windsurf, Claude Desktop, Goose or any other MCP client
+- VS Code, Cursor, Windsurf, Claude Desktop, Goose, Junie or any other MCP client
 
 <!--
 // Generate using:
@@ -322,6 +322,35 @@ Follow the MCP install [guide](https://github.com/google-gemini/gemini-cli/blob/
 #### Or install manually:
 
 Go to `Advanced settings` -> `Extensions` -> `Add custom extension`. Name to your liking, use type `STDIO`, and set the `command` to `npx @playwright/mcp`. Click "Add Extension".
+</details>
+
+<details>
+<summary>Junie</summary>
+
+To add the Playwright MCP server in Junie CLI:
+
+1. Type `/mcp`
+2. Press `Ctrl+A` to add a new MCP server
+3. Select **Playwright** from the list
+
+Alternatively, add to `.junie/mcp/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "Playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
+    }
+  }
+}
+```
+
+For more information, see the [Junie MCP configuration documentation](https://junie.jetbrains.com/docs/junie-cli-mcp-configuration.html).
+
 </details>
 
 <details>
@@ -1052,6 +1081,7 @@ http.createServer(async (req, res) => {
   - Description: Capture accessibility snapshot of the current page, this is better than screenshot
   - Parameters:
     - `filename` (string, optional): Save snapshot to markdown file instead of returning it in the response.
+    - `ref` (string, optional): Element reference from the previous page snapshot to capture a partial snapshot instead of the whole page
     - `selector` (string, optional): Element selector of the root element to capture a partial snapshot instead of the whole page
     - `depth` (number, optional): Limit the depth of the snapshot tree
   - Read-only: **true**
