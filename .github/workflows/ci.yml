@@ -11,10 +11,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  PWMCP_DEBUG: '1'
-  PWDEBUGIMPL: '1'
-
 jobs:
   lint:
     runs-on: ubuntu-latest

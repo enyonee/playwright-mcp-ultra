@@ -63,11 +63,11 @@ const ConnectApp: React.FC = () => {
 
       try {
         const client = JSON.parse(params.get('client') || '{}');
-        const info = `${client.name}/${client.version}`;
+        const info = `${client.name || 'unknown'}`;
         setClientInfo(info);
         setStatus({
           type: 'connecting',
-          message: `🎭 Playwright MCP started from  "${info}" is trying to connect. Do you want to continue?`
+          message: `"${info}" is trying to connect to the Playwright Extension.`
         });
       } catch (e) {
         setStatus({ type: 'error', message: 'Failed to parse client version.' });
@@ -147,25 +147,27 @@ const ConnectApp: React.FC = () => {
       });
 
       if (response?.success) {
-        setStatus({ type: 'connected', message: `MCP client "${clientInfo}" connected.` });
+        setStatus({ type: 'connected', message: `"${clientInfo}" connected.` });
       } else {
         setStatus({
           type: 'error',
-          message: response?.error || `MCP client "${clientInfo}" failed to connect.`
+          message: response?.error || `"${clientInfo}" failed to connect.`
         });
       }
     } catch (e) {
       setStatus({
         type: 'error',
-        message: `MCP client "${clientInfo}" failed to connect: ${e}`
+        message: `"${clientInfo}" failed to connect: ${e}`
       });
     }
   }, [clientInfo, mcpRelayUrl]);
 
   useEffect(() => {
     const listener = (message: any) => {
-      if (message.type === 'connectionTimeout')
-        handleReject('Connection timed out.');
+      if (message.type === 'pendingConnectionClosed') {
+        handleReject('Pending client connection closed.');
+        document.title = 'Playwright Extension';
+      }
     };
     chrome.runtime.onMessage.addListener(listener);
     return () => {
@@ -201,13 +203,22 @@ const ConnectApp: React.FC = () => {
         )}
 
         {status?.type === 'connecting' && (
+          <div className='warning-banner'>
+            <strong>⚠️ Warning:</strong> Allowing this connection exposes the entire browser to the client,
+            including any signed-in sessions, cookies, and content in other tabs and windows.
+            Once approved, the client may also be able to reconnect later without showing this dialog again,
+            unless you regenerate the token below and then restart the browser.
+          </div>
+        )}
+
+        {status?.type === 'connecting' && (
           <AuthTokenSection />
         )}
 
         {showTabList && (
           <div>
             <div className='tab-section-title'>
-              Select page to expose to MCP server:
+              Select the default tab for this connection:
             </div>
             <div>
               {tabs.map(tab => (
@@ -235,7 +246,7 @@ const VersionMismatchError: React.FC<{ extensionVersion: string }> = ({ extensio
   return (
     <div>
       Playwright MCP version trying to connect requires newer extension version (current version: {extensionVersion}).{' '}
-      Update <a href={chromeWebStoreUrl} target='_blank' rel='noopener noreferrer'>Playwright MCP Bridge</a> from the Chrome Web Store to the latest version.{' '}
+      Update <a href={chromeWebStoreUrl} target='_blank' rel='noopener noreferrer'>Playwright Extension</a> from the Chrome Web Store to the latest version.{' '}
       See <a href={readmeUrl} target='_blank' rel='noopener noreferrer'>installation instructions</a> for more details.
     </div>
   );

@@ -43,6 +43,7 @@ const ALLOWED_CHROME_COMMANDS = new Set([
   'chrome.debugger.detach',
   'chrome.debugger.sendCommand',
   'chrome.tabs.create',
+  'chrome.tabs.remove',
 ]);
 
 // chrome.* events the extension forwards to the relay (positional params).
@@ -94,6 +95,46 @@ export class RelayConnection {
     // ws.onclose is called asynchronously, so we call it here to avoid forwarding
     // CDP events to the closed connection.
     this._onClose();
+  }
+
+  // Simulates a "new tab opened" event for a tab the user added to the group.
+  // The relay reacts by issuing chrome.debugger.attach, which flows through
+  // the normal command path and fires ontabattached.
+  async attachTab(tabId: number): Promise<void> {
+    if (this._closed || this._protocolVersion !== 2)
+      return;
+    if (this._attachedTabs.has(tabId))
+      return;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      this._sendMessage({ method: 'chrome.tabs.onCreated', params: [tab] });
+    } catch (error: any) {
+      debugLog('Error requesting attach for tab:', error);
+    }
+  }
+
+  // Simulates a "tab closed" event for a tab the user removed from the group.
+  // chrome.debugger.detach does not fire onDetach for the caller, so we do the
+  // bookkeeping and notify the relay ourselves.
+  async detachTab(tabId: number): Promise<void> {
+    if (this._closed)
+      return;
+    if (!this._attachedTabs.has(tabId))
+      return;
+    try {
+      await chrome.debugger.detach({ tabId });
+    } catch (error: any) {
+      debugLog('Error detaching tab:', error);
+    }
+    this._attachedTabs.delete(tabId);
+    this.ontabdetached?.(tabId);
+    if (this._protocolVersion === 2) {
+      this._sendMessage({
+        method: 'chrome.debugger.onDetach',
+        params: [{ tabId }, 'target_closed'],
+      });
+    }
+    this._checkLastTabDetached();
   }
 
   private _installEventForwarders(): void {
@@ -233,6 +274,8 @@ export class RelayConnection {
     }
     if (message.method === 'forwardCDPCommand') {
       const { sessionId, method, params } = message.params;
+      if (method === 'Target.createTarget')
+        throw new Error('Tab creation is not supported yet. Update Playwright MCP or CLI to the latest version.');
       const tabId = [...this._attachedTabs][0];
       if (tabId === undefined)
         throw new Error('No tab is connected');
